@@ -1,0 +1,9 @@
+{
+  "name": "o2-exchange-skills",
+  "skills": [
+    "./skills/o2-sdk/typescript",
+    "./skills/o2-sdk/rust",
+    "./skills/fast-bridge/deposits",
+    "./skills/fast-bridge/withdrawals"
+  ]
+}
