@@ -178,6 +178,10 @@ Encoding rules for this helper:
 Precomputed 64-bit Fuel method selectors:
 
 ```text
+GasOracle.get_withdrawal_fee
+selector:            0x000000007364c71f
+bytes:               [0x00, 0x00, 0x00, 0x00, 0x73, 0x64, 0xc7, 0x1f]
+
 AssetRegistry.withdraw_via_fast_bridge_with_fee
 canonical signature: withdraw_via_fast_bridge_with_fee(b256,generic T,b256,u64)
 selector:            0x0000000061cf5767
@@ -266,6 +270,10 @@ withdraw_via_fast_bridge_with_fee call_data =
   || bytes32(padded_evm_recipient)
   || u64_be(fee_quote)
 
+get_withdrawal_fee call_data =
+  u32_be(destination_chain)
+  || bytes32(wrappedAssetId)
+
 build_actions_signing_bytes(nonce, [bridge_call]) =
   u64_be(nonce)
   || u64_be(num_calls)
@@ -284,6 +292,35 @@ option_call_data =
 ```
 
 For the bridge withdrawal call data, the length is `32 + 4 + 32 + 8 = 76` bytes. `destination_chain` is a 4-byte big-endian `u32`, not an 8-byte `u64`.
+
+External calls needed by the helper:
+
+```text
+1. Fetch nonce
+   GET https://api.o2.app/v1/accounts?trade_account_id=<trade_account_id>
+   Read response.nonce.
+
+2. Fetch fast-bridge fee
+   Fuel read call:
+     contract_id: GasOracle
+     function_selector: 0x000000007364c71f
+     call_data: u32_be(destination_chain) || bytes32(wrappedAssetId)
+   Decode returned u64 as feeQuote.
+
+3. Sign owner payload
+   EVM owner: Ethereum personal_sign over signing_bytes.
+   Fuel owner: Fuel personal_sign over signing_bytes.
+   Submit envelope is always { "Secp256k1": "0x<64-byte-signature>" }.
+
+4. Submit O2 action
+   POST https://api.o2.app/v1/accounts/actions
+   Headers:
+     Content-Type: application/json
+     O2-Owner-Id: <owner_b256>
+   Body: the WithdrawViaFastBridgeWithFee payload shown below.
+```
+
+If using a Fuel contract library, step 2 can call `GasOracle.get_withdrawal_fee(destination_chain, { bits: wrappedAssetId })` with `./abis/GasOracle-abi.json`. If not, use the selector and call-data layout above.
 
 ## Identifier Rules
 
