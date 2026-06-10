@@ -18,9 +18,11 @@ Use these bundled ABIs when writing bridge code:
 ./abis/GasOracle-abi.json
 ```
 
+These are full Fuel ABIs so `fuels.Interface`, generated bindings, or equivalent ABI tooling can derive `selectorBytes` and encode arguments directly.
+
 If an implementation does not want to install the full Fuel ABI encoding stack, this skill provides the pieces needed to build the signed withdrawal payload manually:
 
-- precomputed Fuel method selectors
+- precomputed Fuel `selectorBytes` values for the signed withdrawal path
 - exact owner signing byte layout
 - exact `WithdrawViaFastBridgeWithFee` O2 API payload shape
 - exact `withdraw_via_fast_bridge_with_fee` call-data byte layout
@@ -164,9 +166,9 @@ Minimal TradeAccount nested types:
 
 Encoding rules for this helper:
 
-- Fuel contract method selectors are 8 bytes: four zero bytes followed by the first four bytes of `sha256(utf8(canonical_abi_signature))`.
+- In the O2 signed `call_contracts` path, `CallContractArg.function_selector` is Fuel `selectorBytes`: `u64_be(method_name.length) || utf8(method_name)`.
+- Do not use the 8-byte Fuel method hash in `bridge_call.function_selector` for this O2 account-action flow.
 - Do not use Keccak/Solidity selectors.
-- Do not derive Fuel method selectors from only the method name. Use the ABI canonical signature.
 - `call_data` is ABI-encoded arguments for `withdraw_via_fast_bridge_with_fee(sub_id, destination_chain, recipient, fee_quote)`.
 - `recipient` inside `call_data` is the 32-byte left-padded EVM recipient.
 - `coins` is the gross debit amount in the wrapped asset.
@@ -175,47 +177,36 @@ Encoding rules for this helper:
 - For simulation, pass `Some(Signature::Secp256k1(signature_bytes))`.
 - For O2 API JSON, submit `{ "Secp256k1": "0x..." }`.
 
-Precomputed 64-bit Fuel method selectors:
+Precomputed Fuel `selectorBytes` for this flow:
 
 ```text
 GasOracle.get_withdrawal_fee
-selector:            0x000000007364c71f
-bytes:               [0x00, 0x00, 0x00, 0x00, 0x73, 0x64, 0xc7, 0x1f]
+selectorBytes: 0x00000000000000126765745f7769746864726177616c5f666565
+raw Fuel method selector: 0x000000007364c71f
 
 AssetRegistry.withdraw_via_fast_bridge_with_fee
-canonical signature: withdraw_via_fast_bridge_with_fee(b256,generic T,b256,u64)
-selector:            0x0000000061cf5767
-bytes:               [0x00, 0x00, 0x00, 0x00, 0x61, 0xcf, 0x57, 0x67]
+selectorBytes: 0x000000000000002177697468647261775f7669615f666173745f6272696467655f776974685f666565
 
 TradeAccount.call_contracts
-selector:            0x000000001afa33f7
-bytes:               [0x00, 0x00, 0x00, 0x00, 0x1a, 0xfa, 0x33, 0xf7]
+selectorBytes: 0x000000000000000e63616c6c5f636f6e747261637473
 ```
 
-Use the `AssetRegistry.withdraw_via_fast_bridge_with_fee` selector inside `bridge_call.function_selector`. The `TradeAccount.call_contracts` selector is only needed if building a raw Fuel transaction that calls the trade account contract directly. O2 account-action signing uses the separate `actionSelector("call_contracts")` encoding below. You do not need the long generated canonical signature for `call_contracts` if you use the precomputed selector above.
+Use the `AssetRegistry.withdraw_via_fast_bridge_with_fee` `selectorBytes` inside `bridge_call.function_selector`. O2 account-action signing uses the same byte encoding for `actionSelector("call_contracts")`; the precomputed `TradeAccount.call_contracts` value above is included so agents do not need to derive it.
 
-Selector derivation:
+SelectorBytes derivation:
 
 ```ts
-import { createHash } from "crypto";
-
-function fuelMethodSelector(canonicalSignature: string): Uint8Array {
-  const hash = createHash("sha256")
-    .update(Buffer.from(canonicalSignature, "utf8"))
-    .digest();
-  return Uint8Array.from([0, 0, 0, 0, hash[0], hash[1], hash[2], hash[3]]);
+function selectorBytes(name: string): Uint8Array {
+  const bytes = new TextEncoder().encode(name);
+  return concat([u64BE(bytes.length), bytes]);
 }
 
-const withdrawSelector = fuelMethodSelector(
-  "withdraw_via_fast_bridge_with_fee(b256,generic T,b256,u64)",
-);
+const withdrawSelectorBytes = selectorBytes("withdraw_via_fast_bridge_with_fee");
 ```
 
-This does not require the Fuel TypeScript or Rust SDK. A normal SHA-256 implementation is enough once the canonical ABI signature is known.
+This does not require the Fuel TypeScript or Rust SDK.
 
-The `generic T` in the withdrawal signature comes from the generated Fuel ABI for the `u32` destination-chain argument. For withdrawals, agents do not need to derive the `TradeAccount.call_contracts` selector because the precomputed value is listed above.
-
-O2 account-action signing uses a separate variable-length action selector encoding:
+O2 account-action signing also uses this variable-length selector encoding:
 
 ```ts
 function actionSelector(name: string): Uint8Array {
@@ -224,9 +215,9 @@ function actionSelector(name: string): Uint8Array {
 }
 ```
 
-Use `actionSelector("call_contracts")` in `signing_bytes`. Use the Fuel method selector for the target contract call payload.
+Use `actionSelector("call_contracts")` in `signing_bytes`. Use `selectorBytes("withdraw_via_fast_bridge_with_fee")` for the target contract call payload.
 
-Why the Fuel method selector is needed:
+Why the target selector bytes are needed:
 
 ```text
 O2 account action
@@ -235,20 +226,20 @@ O2 account action
       -> withdraw_via_fast_bridge_with_fee(...)
 ```
 
-The O2 REST payload does not use the Fuel method selector directly. The selector is needed inside `bridge_call.function_selector` because `TradeAccount.call_contracts` builds a low-level Fuel VM call and must tell `AssetRegistry` which method to run. If generated Fuel bindings are available, they can provide this selector. If not, derive it from the canonical ABI signature as shown above.
+The O2 REST payload does not use the selector bytes directly. They are needed inside `bridge_call.function_selector` because `TradeAccount.call_contracts` builds a low-level Fuel VM call and must tell `AssetRegistry` which method to run. If generated Fuel bindings are available, use the function fragment's `selectorBytes`. If not, use the precomputed `selectorBytes` above.
 
 Owner signing bytes for the O2 account action:
 
 ```text
 signing_bytes =
   u64_be(nonce)
-  || u64_be(fuel_chain_id)
+  || u64_be(o2_chain_id)
   || actionSelector("call_contracts")
   || build_actions_signing_bytes(nonce, [bridge_call])[8..]
 
 bridge_call =
   contract_id: AssetRegistry
-  function_selector: 0x0000000061cf5767
+  function_selector: 0x000000000000002177697468647261775f7669615f666173745f6272696467655f776974685f666565
   amount: grossDebit
   asset_id: wrappedAssetId
   gas: u64::MAX
@@ -298,29 +289,36 @@ External calls needed by the helper:
 ```text
 1. Fetch nonce
    GET https://api.o2.app/v1/accounts?trade_account_id=<trade_account_id>
-   Read response.nonce.
+   Read nonce defensively from response.nonce or response.trade_account.nonce.
 
-2. Fetch fast-bridge fee
-   Fuel read call:
+2. Fetch O2 signing chain ID
+   GET https://api.o2.app/v1/markets
+   Read response.chain_id. It may be a hex string such as "0x0"; parse it to u64 for signing.
+
+3. Fetch fast-bridge fee
+   Preferred: use a Fuel contract library with ./abis/GasOracle-abi.json:
+     GasOracle.get_withdrawal_fee(destination_chain, { bits: wrappedAssetId })
+
+   If building a true raw Fuel read transaction:
      contract_id: GasOracle
      function_selector: 0x000000007364c71f
      call_data: u32_be(destination_chain) || bytes32(wrappedAssetId)
    Decode returned u64 as feeQuote.
 
-3. Sign owner payload
+4. Sign owner payload
    EVM owner: Ethereum personal_sign over signing_bytes.
    Fuel owner: Fuel personal_sign over signing_bytes.
    Submit envelope is always { "Secp256k1": "0x<64-byte-signature>" }.
 
-4. Submit O2 action
+5. Submit O2 action
    POST https://api.o2.app/v1/accounts/actions
    Headers:
-     Content-Type: application/json
-     O2-Owner-Id: <owner_b256>
+    Content-Type: application/json
+    O2-Owner-Id: <owner_b256>
    Body: the WithdrawViaFastBridgeWithFee payload shown below.
 ```
 
-If using a Fuel contract library, step 2 can call `GasOracle.get_withdrawal_fee(destination_chain, { bits: wrappedAssetId })` with `./abis/GasOracle-abi.json`. If not, use the selector and call-data layout above.
+For signing, `o2_chain_id` means the O2 market/config chain ID used by the O2 API and SDK. Do not substitute an arbitrary raw Fuel provider chain ID if it differs from the O2 client/config value.
 
 ## Identifier Rules
 
@@ -408,20 +406,21 @@ Session key reminder:
 O2 setup:
 
 ```ts
-const client = new AsyncO2Client({
-  config: {
-    apiBase: "https://api.o2.app",
-    wsUrl: "wss://api.o2.app/v1/ws",
-    fuelRpc: FUEL_RPC_URL,
-    faucetUrl: undefined,
-  },
-}).setChainId(fuelChainId);
+import { Network, O2Client } from "@o2exchange/sdk";
 
-const ownerSigner = await getO2Signer(config);
+const client = new O2Client({ network: Network.MAINNET });
+const ownerSigner =
+  ownerType === "evm"
+    ? O2Client.loadEvmWallet(ownerPrivateKey)
+    : O2Client.loadWallet(ownerPrivateKey);
 
 // Creates the trade account if needed and returns its ID.
 const account = await client.setupAccount(ownerSigner);
 const tradeAccountId = account.tradeAccountId;
+
+// Use the O2 API chain_id for signing, not a raw provider chain id.
+const marketsResponse = await fetch("https://api.o2.app/v1/markets").then((r) => r.json());
+const o2ChainId = BigInt(marketsResponse.chain_id);
 
 // Sessions are for trading actions. This is not the withdrawal signer.
 const market = await client.getMarket("ETH/USDC");
@@ -561,11 +560,13 @@ const calldata = assetRegistryInterface.functions
   ]);
 
 const gas = 2n ** 64n - 1n;
-const functionSelector = hexToBytes("0x0000000061cf5767");
+const functionSelector = hexToBytes(
+  "0x000000000000002177697468647261775f7669615f666173745f6272696467655f776974685f666565",
+);
 
 const signingBytes = concat([
   u64BE(nonce),
-  u64BE(fuelChainId),
+  u64BE(o2ChainId),
   actionSelector("call_contracts"),
   buildActionsSigningBytes(nonce, [
     {
@@ -584,7 +585,7 @@ const signatureBytes =
 const signatureHex = hexlify(signatureBytes);
 ```
 
-Before submitting the API action, simulate the same call through the O2 trade account contract. The simulation catches bad signatures, bad call data, wrong assets, and fee drift before the O2 API accepts the action.
+Before submitting the API action, simulate the same call through the O2 trade account contract. Treat this as required for a minimum working implementation. The simulation catches bad signatures, bad call data, wrong assets, and fee drift before the O2 API accepts the action.
 
 ```ts
 await tradeAccount.functions
@@ -645,25 +646,20 @@ The Rust `o2-sdk` does not natively expose fast-bridge withdrawal yet. Use `../.
 What Rust SDK gives you:
 
 ```rust
-use sha2::Digest;
 use o2_sdk::{
     crypto::{parse_hex_32, to_hex_string},
     encoding::{build_actions_signing_bytes, function_selector, u64_be, CallArg, GAS_MAX},
     SignableWallet,
 };
-
-// Fuel contract method selector: 0x00000000 || sha256(canonical_signature)[0..4].
-fn fuel_method_selector(canonical_signature: &str) -> Vec<u8> {
-    let hash = sha2::Sha256::digest(canonical_signature.as_bytes());
-    vec![0, 0, 0, 0, hash[0], hash[1], hash[2], hash[3]]
-}
 ```
+
+If using the Rust snippet below, add `hex = "0.4"` or replace `hex::decode(...)` with the project's existing hex decoder.
 
 What the helper must supply outside stock Rust SDK:
 
 - generated Fuel bindings or equivalent ABI code for `AssetRegistry`, `GasOracle`, and the O2 trade account
 - ABI encoding for `AssetRegistry.withdraw_via_fast_bridge_with_fee(sub_id, destination_chain, recipient, fee_quote)`
-- simulation of `trade_account.call_contracts(signature, calls)`
+- simulation of `trade_account.call_contracts(signature, calls)` before submitting the O2 API action
 - `POST /v1/accounts/actions` with header `O2-Owner-Id: owner_b256`
 
 ### Rust Signing Core
@@ -679,7 +675,7 @@ use o2_sdk::{
 
 struct BridgeActionInput {
     nonce: u64,
-    fuel_chain_id: u64,
+    o2_chain_id: u64,
     asset_registry_contract_id: String,
     wrapped_asset_id: String,
     gross_debit: u64,
@@ -692,7 +688,10 @@ fn sign_bridge_account_action<W: SignableWallet>(
 ) -> Result<(String, String), o2_sdk::O2Error> {
     let call = CallArg {
         contract_id: parse_hex_32(&input.asset_registry_contract_id)?,
-        function_selector: vec![0x00, 0x00, 0x00, 0x00, 0x61, 0xcf, 0x57, 0x67],
+        function_selector: hex::decode(
+            "000000000000002177697468647261775f7669615f666173745f6272696467655f776974685f666565",
+        )
+        .map_err(|e| o2_sdk::O2Error::Other(e.to_string()))?,
         amount: input.gross_debit,
         asset_id: parse_hex_32(&input.wrapped_asset_id)?,
         gas: GAS_MAX,
@@ -703,7 +702,7 @@ fn sign_bridge_account_action<W: SignableWallet>(
 
     let mut signing_bytes = Vec::new();
     signing_bytes.extend_from_slice(&u64_be(input.nonce));
-    signing_bytes.extend_from_slice(&u64_be(input.fuel_chain_id));
+    signing_bytes.extend_from_slice(&u64_be(input.o2_chain_id));
     // O2 action selector encoding: u64_be(name.len()) + utf8(name).
     signing_bytes.extend_from_slice(&function_selector("call_contracts"));
     signing_bytes.extend_from_slice(&action_bytes[8..]); // remove duplicated nonce
@@ -719,6 +718,7 @@ fn sign_bridge_account_action<W: SignableWallet>(
 Signing rules:
 
 - Load an EVM owner with `client.load_evm_wallet(...)`; load a Fuel owner with `client.load_wallet(...)`.
+- `o2_chain_id` is the O2 SDK/network config chain ID used for account actions. Do not replace it with a raw Fuel provider chain ID if they differ.
 - Always call `owner.personal_sign(&signing_bytes)` from the Rust SDK `SignableWallet` trait.
 - The Rust SDK chooses Fuel personal signing for `Wallet` and Ethereum `personal_sign` for `EvmWallet`.
 - The owner B256 for `EvmWallet` is the 20-byte EVM address left-padded to 32 bytes.
@@ -758,7 +758,7 @@ let (owner_b256, signature_hex) = sign_bridge_account_action(
     &owner_wallet,
     BridgeActionInput {
         nonce,
-        fuel_chain_id,
+        o2_chain_id,
         asset_registry_contract_id: ASSET_REGISTRY.to_string(),
         wrapped_asset_id: wrapped_asset_id.to_string(),
         gross_debit,
@@ -771,7 +771,7 @@ trade_account
         secp256k1_signature_from_hex(&signature_hex)?,
         vec![call_contract_arg_for_simulation(
             ASSET_REGISTRY,
-            "withdraw_via_fast_bridge_with_fee",
+            hex::decode("000000000000002177697468647261775f7669615f666173745f6272696467655f776974685f666565")?,
             gross_debit,
             wrapped_asset_id,
             GAS_MAX,
@@ -780,6 +780,9 @@ trade_account
     )
     .await?;
 
+// call_contract_arg_for_simulation must put those selector bytes into
+// CallContractArg.function_selector. Do not convert the method name to an
+// 8-byte hash.
 let body = json!({
     "actions": [{
         "WithdrawViaFastBridgeWithFee": {
