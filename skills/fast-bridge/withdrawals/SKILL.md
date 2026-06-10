@@ -184,12 +184,11 @@ selector:            0x0000000061cf5767
 bytes:               [0x00, 0x00, 0x00, 0x00, 0x61, 0xcf, 0x57, 0x67]
 
 TradeAccount.call_contracts
-canonical signature: call_contracts(e<e(s(a[u8;64]),s(a[u8;64]),s(a[u8;64]))>((),e(s(a[u8;64]),s(a[u8;64]),s(a[u8;64]))),s<s(s(b256),s(s(rawptr,u64),u64),s(u64,s(b256),u64),e<s(s(rawptr,u64),u64)>((),s(s(rawptr,u64),u64)))>(s<s(s(b256),s(s(rawptr,u64),u64),s(u64,s(b256),u64),e<s(s(rawptr,u64),u64)>((),s(s(rawptr,u64),u64)))>(rawptr,u64),u64))
 selector:            0x000000001afa33f7
 bytes:               [0x00, 0x00, 0x00, 0x00, 0x1a, 0xfa, 0x33, 0xf7]
 ```
 
-Use the `AssetRegistry.withdraw_via_fast_bridge_with_fee` selector inside `bridge_call.function_selector`. The `TradeAccount.call_contracts` selector is only needed if building a raw Fuel transaction that calls the trade account contract directly. O2 account-action signing uses the separate `actionSelector("call_contracts")` encoding below.
+Use the `AssetRegistry.withdraw_via_fast_bridge_with_fee` selector inside `bridge_call.function_selector`. The `TradeAccount.call_contracts` selector is only needed if building a raw Fuel transaction that calls the trade account contract directly. O2 account-action signing uses the separate `actionSelector("call_contracts")` encoding below. You do not need the long generated canonical signature for `call_contracts` if you use the precomputed selector above.
 
 Selector derivation:
 
@@ -206,15 +205,11 @@ function fuelMethodSelector(canonicalSignature: string): Uint8Array {
 const withdrawSelector = fuelMethodSelector(
   "withdraw_via_fast_bridge_with_fee(b256,generic T,b256,u64)",
 );
-
-const callContractsSelector = fuelMethodSelector(
-  "call_contracts(e<e(s(a[u8;64]),s(a[u8;64]),s(a[u8;64]))>((),e(s(a[u8;64]),s(a[u8;64]),s(a[u8;64]))),s<s(s(b256),s(s(rawptr,u64),u64),s(u64,s(b256),u64),e<s(s(rawptr,u64),u64)>((),s(s(rawptr,u64),u64)))>(s<s(s(b256),s(s(rawptr,u64),u64),s(u64,s(b256),u64),e<s(s(rawptr,u64),u64)>((),s(s(rawptr,u64),u64)))>(rawptr,u64),u64))",
-);
 ```
 
 This does not require the Fuel TypeScript or Rust SDK. A normal SHA-256 implementation is enough once the canonical ABI signature is known.
 
-The `generic T` in the withdrawal signature comes from the generated Fuel ABI for the `u32` destination-chain argument. If an agent has the ABI JSON, prefer reading the function fragment's canonical `signature` field from a Fuel ABI parser and applying the same `sha256` rule. If it does not, use the canonical signature above for this mainnet AssetRegistry method.
+The `generic T` in the withdrawal signature comes from the generated Fuel ABI for the `u32` destination-chain argument. For withdrawals, agents do not need to derive the `TradeAccount.call_contracts` selector because the precomputed value is listed above.
 
 O2 account-action signing uses a separate variable-length action selector encoding:
 
