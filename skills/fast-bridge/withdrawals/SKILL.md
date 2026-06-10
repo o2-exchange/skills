@@ -362,6 +362,25 @@ grossDebit       = desiredNetAmount + feeQuote
 
 Use `grossDebit` as the forwarded/action amount. If an existing helper treats its `amount` argument as the gross debit, say that clearly because the user receives `amount - requiredFee` on the destination chain.
 
+## Asset Symbol Rules
+
+Fast bridge withdrawal sub IDs use the universal wrapped asset symbol registered in the AssetRegistry.
+
+```text
+USDC on EVM source/destination -> uwUSDC on Fuel/O2 fast bridge
+ETH  on EVM source/destination -> uwETH on Fuel/O2 fast bridge
+FUEL on EVM source/destination -> uwFUEL on Fuel/O2 fast bridge
+```
+
+Use:
+
+```text
+assetSubId = sha256(utf8("uwUSDC"))
+wrappedAssetId = sha256(bytes32(WrappedAssetsMinter) || bytes32(assetSubId))
+```
+
+Do not hash `"USDC"` for a fast-bridge withdrawal unless that exact symbol is explicitly registered in the target AssetRegistry. O2 market labels may show `ETH/USDC`, but the fast-bridge withdrawal asset symbol is the universal wrapped symbol such as `uwUSDC`.
+
 ## O2 Helper Withdrawal Flow
 
 This is the path to recommend when funds are in an O2 trading account.
@@ -419,7 +438,7 @@ This is the shape to expose in an application wrapper. This method is not on sto
 const txId = await client.withdrawToChain(
   ownerSigner,
   tradeAccountId,
-  "USDC",
+  "uwUSDC",
   "0.5",
   {
     chainId: 8453,
@@ -519,7 +538,7 @@ import { TradeAccount } from "@o2exchange/contracts/trade-account";
 import { concat, getMintedAssetId, sha256, toUtf8Bytes, WalletLocked } from "fuels";
 import { hexlify, zeroPadValue } from "ethers";
 
-const assetSubId = sha256(toUtf8Bytes(asset));      // "USDC" -> sub ID
+const assetSubId = sha256(toUtf8Bytes(asset));      // "uwUSDC" -> sub ID
 const assetId = getMintedAssetId(wrappedAssetsMinterContractId, assetSubId);
 const desiredNetAmount =
   typeof amount === "bigint" ? amount : scaleDecimalString(amount, 9);
@@ -715,7 +734,7 @@ Keep contract ABI work explicit. Use generated bindings where possible; do not h
 use serde_json::json;
 
 let desired_net_amount: u64 = scale_decimal_9("0.5")?; // 500000000
-let asset_sub_id = sha256_utf8("USDC");
+let asset_sub_id = sha256_utf8("uwUSDC");
 let wrapped_asset_id = minted_asset_id(wrapped_assets_minter_contract_id, asset_sub_id);
 
 let fee_quote: u64 = gas_oracle
@@ -862,6 +881,7 @@ await assetRegistry.functions
 Direct path rules:
 
 - Fetch fee from `GasOracle.get_withdrawal_fee(chain_id, asset_id)`.
+- Use the universal wrapped symbol/sub ID, such as `uwUSDC`, not the source-chain symbol `USDC`.
 - `amount` inside `.callParams.forward` is the gross debit.
 - If the caller asks to receive a specific net amount on EVM, forward `desiredNetAmount + feeQuote`.
 - If the caller passes a gross debit amount, expected EVM-side net is `grossDebit - currentRequiredFee`.
@@ -892,6 +912,7 @@ For a trader moving funds across the bridge:
 - session key used for withdrawal instead of owner signer
 - missing `trade_account_id`
 - stale nonce in account action
+- hashing `USDC`, `ETH`, or `FUEL` instead of the registered universal wrapped symbol such as `uwUSDC`, `uwETH`, or `uwFUEL`
 - destination recipient padded before passing to a `withdrawToChain`-style helper
 - amount scaled with destination token decimals instead of 9
 - direct contract call forwards only withdrawal amount and forgets fee

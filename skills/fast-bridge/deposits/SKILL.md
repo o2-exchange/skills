@@ -113,6 +113,8 @@ const ethAmount = parseEther("0.01");
 
 `Messenger` normalizes the deposit to the bridge's 9-decimal format internally. If source decimals are greater than 9, the amount must scale down cleanly or the transaction reverts.
 
+On Fuel/O2, the credited bridge asset is the universal wrapped asset, such as `uwUSDC`, `uwETH`, or `uwFUEL`. Deposits still use the source-chain token address and source token decimals on EVM; the `uw` symbol matters later when deriving withdrawal `sub_id` / wrapped asset ID.
+
 ## Source-Side Examples
 
 ERC-20 deposit:
