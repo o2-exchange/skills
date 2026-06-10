@@ -227,6 +227,40 @@ bridge_call =
   call_data: abi_encode(sub_id, destination_chain, padded_evm_recipient, fee_quote)
 ```
 
+No-SDK byte layouts:
+
+```text
+assetSubId =
+  sha256(utf8(asset_symbol))
+
+wrappedAssetId =
+  sha256(bytes32(WrappedAssetsMinter contract id) || bytes32(assetSubId))
+
+withdraw_via_fast_bridge_with_fee call_data =
+  bytes32(sub_id)
+  || u32_be(destination_chain)
+  || bytes32(padded_evm_recipient)
+  || u64_be(fee_quote)
+
+build_actions_signing_bytes(nonce, [bridge_call]) =
+  u64_be(nonce)
+  || u64_be(num_calls)
+  || for each call:
+       bytes32(contract_id)
+       || u64_be(function_selector.length)
+       || function_selector
+       || u64_be(amount)
+       || bytes32(asset_id)
+       || u64_be(gas)
+       || option_call_data
+
+option_call_data =
+  None: u64_be(0)
+  Some(bytes): u64_be(1) || u64_be(bytes.length) || bytes
+```
+
+For the bridge withdrawal call data, the length is `32 + 4 + 32 + 8 = 76` bytes. `destination_chain` is a 4-byte big-endian `u32`, not an 8-byte `u64`.
+
 ## Identifier Rules
 
 These identifiers are different. Do not swap them.
