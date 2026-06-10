@@ -4,6 +4,10 @@ Skills for helping agents guide O2 traders through SDK usage and fast-bridge fun
 
 ## Reference
 
+### O2 Reference
+
+- **[o2-reference](./skills/o2-reference/SKILL.md)** — Shared O2 public docs for API/session/signing details used by the SDK and bridge skills.
+
 ### O2 SDK
 
 - **[o2-sdk-typescript](./skills/o2-sdk/typescript/SKILL.md)** — TypeScript reference for O2 SDK setup, owner signers, trading accounts, sessions, markets, balances, orders, nonce recovery, and account actions.
@@ -16,10 +20,9 @@ Skills for helping agents guide O2 traders through SDK usage and fast-bridge fun
 
 ### References
 
-- **[o2-skills.md](./references/o2-skills.md)** — O2 trading integration workflow.
-- **[o2-reference.md](./references/o2-reference.md)** — O2 API/session/signing/order reference.
+- O2 public reference docs are bundled inside the `o2-reference` skill so SDK skills do not duplicate them.
 
 ### Fast Bridge ABIs
 
-- **[fast-bridge-abis/](./fast-bridge-abis)** — Minimal ABI fragments used by the examples:
-  `Messenger.json`, `IERC20Metadata.json`, `IERC20Permit.json`, `AssetRegistry-abi.json`, and `GasOracle-abi.json`.
+- Bridge ABI fragments live inside the bridge skill folders that use them:
+  `skills/fast-bridge/deposits/abis/` and `skills/fast-bridge/withdrawals/abis/`.

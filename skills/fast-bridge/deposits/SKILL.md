@@ -12,9 +12,9 @@ For O2 TypeScript account setup and `trade_account_id` discovery, use `../../o2-
 Use these bundled ABIs when writing code:
 
 ```text
-../../../fast-bridge-abis/Messenger.json
-../../../fast-bridge-abis/IERC20Metadata.json
-../../../fast-bridge-abis/IERC20Permit.json
+./abis/Messenger.json
+./abis/IERC20Metadata.json
+./abis/IERC20Permit.json
 ```
 
 ## User Action
@@ -65,8 +65,8 @@ Correct:
 
 ```ts
 import { Contract, parseUnits } from "ethers";
-import MessengerArtifact from "../../../fast-bridge-abis/Messenger.json";
-import IERC20MetadataArtifact from "../../../fast-bridge-abis/IERC20Metadata.json";
+import MessengerArtifact from "./abis/Messenger.json";
+import IERC20MetadataArtifact from "./abis/IERC20Metadata.json";
 
 const tradeAccountId =
   "0xf11b921863b55a03c7c770d4bea4f99a43cc34248fbce6320d4e3bc43d6a8e1f";
@@ -119,8 +119,8 @@ ERC-20 deposit:
 
 ```ts
 import { Contract, MaxUint256, parseUnits } from "ethers";
-import MessengerArtifact from "../../../fast-bridge-abis/Messenger.json";
-import IERC20MetadataArtifact from "../../../fast-bridge-abis/IERC20Metadata.json";
+import MessengerArtifact from "./abis/Messenger.json";
+import IERC20MetadataArtifact from "./abis/IERC20Metadata.json";
 
 const messenger = new Contract(messengerAddress, MessengerArtifact.abi, signer);
 const token = new Contract(tokenAddress, IERC20MetadataArtifact.abi, signer);
@@ -144,7 +144,7 @@ Native ETH deposit:
 
 ```ts
 import { Contract, parseEther } from "ethers";
-import MessengerArtifact from "../../../fast-bridge-abis/Messenger.json";
+import MessengerArtifact from "./abis/Messenger.json";
 
 const messenger = new Contract(messengerAddress, MessengerArtifact.abi, signer);
 const depositTo = tradeAccountId;

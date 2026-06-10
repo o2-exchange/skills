@@ -14,8 +14,8 @@ Current important limitation: stock `@o2exchange/sdk@0.1.0` does not natively su
 Use these bundled ABIs when writing bridge code:
 
 ```text
-../../../fast-bridge-abis/AssetRegistry-abi.json
-../../../fast-bridge-abis/GasOracle-abi.json
+./abis/AssetRegistry-abi.json
+./abis/GasOracle-abi.json
 ```
 
 ## Choose the Path
@@ -42,6 +42,144 @@ Fuel mainnet
 - AssetRegistry:        0x91cfcbef2caad02996cdcb5b897222170e85a91cd2db8f23f07ea7d9ca030c19
 - WrappedAssetsMinter:  0x0f9f509374c2da68997a3a1ad6d85be3f351c2f5f3da4c65bdbfad9b0bb25504
 - GasOracle:            0x3d20e5a675c5fa1053fba11e176099711ba2f23112e385a7f6e2e759eca84f94
+```
+
+## ABI Signatures
+
+Fast bridge fee quote:
+
+```sway
+abi GasOracle {
+    #[storage(read)]
+    fn get_withdrawal_fee(chain_id: u32, asset_id: AssetId) -> u64;
+}
+```
+
+Fast bridge withdrawal:
+
+```sway
+abi AssetRegistry {
+    #[storage(read, write), payable]
+    fn withdraw_via_fast_bridge_with_fee(
+        sub_id: b256,
+        destination_chain: u32,
+        recipient: b256,
+        fee_quote: u64,
+    ) -> b256;
+}
+```
+
+O2 trading-account simulation call:
+
+```sway
+abi TradeAccount {
+    #[storage(read, write), payable]
+    fn call_contracts(
+        signature: Option<Signature>,
+        calls: Vec<CallContractArg>,
+    );
+}
+
+enum Signature {
+    Secp256k1: [u8; 64],
+    Secp256r1: [u8; 64],
+    Ed25519: [u8; 64],
+}
+
+struct CallContractArg {
+    contract_id: ContractId,
+    function_selector: Bytes,
+    call_params: CallParams,
+    call_data: Option<Bytes>,
+}
+
+struct CallParams {
+    coins: u64,
+    asset_id: AssetId,
+    gas: u64,
+}
+```
+
+Minimal ABI fragments to copy into generated bindings or encoding tests:
+
+```json
+{
+  "GasOracle.get_withdrawal_fee": {
+    "inputs": [
+      { "name": "chain_id", "type": "u32" },
+      { "name": "asset_id", "type": "AssetId" }
+    ],
+    "output": "u64"
+  },
+  "AssetRegistry.withdraw_via_fast_bridge_with_fee": {
+    "inputs": [
+      { "name": "sub_id", "type": "b256" },
+      { "name": "destination_chain", "type": "u32" },
+      { "name": "recipient", "type": "b256" },
+      { "name": "fee_quote", "type": "u64" }
+    ],
+    "output": "b256"
+  },
+  "TradeAccount.call_contracts": {
+    "inputs": [
+      { "name": "signature", "type": "Option<Signature>" },
+      { "name": "calls", "type": "Vec<CallContractArg>" }
+    ],
+    "output": "()"
+  }
+}
+```
+
+Minimal TradeAccount nested types:
+
+```json
+{
+  "Signature": {
+    "Secp256k1": "[u8; 64]",
+    "Secp256r1": "[u8; 64]",
+    "Ed25519": "[u8; 64]"
+  },
+  "CallContractArg": {
+    "contract_id": "ContractId",
+    "function_selector": "Bytes",
+    "call_params": "CallParams",
+    "call_data": "Option<Bytes>"
+  },
+  "CallParams": {
+    "coins": "u64",
+    "asset_id": "AssetId",
+    "gas": "u64"
+  }
+}
+```
+
+Encoding rules for this helper:
+
+- `function_selector("call_contracts")` and `function_selector("withdraw_via_fast_bridge_with_fee")` are Fuel selectors: `u64_be(name.len()) + utf8(name)`, not Keccak/Solidity selectors.
+- `call_data` is ABI-encoded arguments for `withdraw_via_fast_bridge_with_fee(sub_id, destination_chain, recipient, fee_quote)`.
+- `recipient` inside `call_data` is the 32-byte left-padded EVM recipient.
+- `coins` is the gross debit amount in the wrapped asset.
+- `asset_id` is the wrapped asset ID derived from `WrappedAssetsMinter` and `sha256(asset_symbol)`.
+- `gas` must be `u64::MAX`.
+- For simulation, pass `Some(Signature::Secp256k1(signature_bytes))`.
+- For O2 API JSON, submit `{ "Secp256k1": "0x..." }`.
+
+Owner signing bytes for the O2 account action:
+
+```text
+signing_bytes =
+  u64_be(nonce)
+  || u64_be(fuel_chain_id)
+  || function_selector("call_contracts")
+  || build_actions_signing_bytes(nonce, [bridge_call])[8..]
+
+bridge_call =
+  contract_id: AssetRegistry
+  function_selector: function_selector("withdraw_via_fast_bridge_with_fee")
+  amount: grossDebit
+  asset_id: wrappedAssetId
+  gas: u64::MAX
+  call_data: abi_encode(sub_id, destination_chain, padded_evm_recipient, fee_quote)
 ```
 
 ## Identifier Rules
@@ -417,6 +555,8 @@ Signing rules:
 - Load an EVM owner with `client.load_evm_wallet(...)`; load a Fuel owner with `client.load_wallet(...)`.
 - Always call `owner.personal_sign(&signing_bytes)` from the Rust SDK `SignableWallet` trait.
 - The Rust SDK chooses Fuel personal signing for `Wallet` and Ethereum `personal_sign` for `EvmWallet`.
+- The owner B256 for `EvmWallet` is the 20-byte EVM address left-padded to 32 bytes.
+- The owner B256 for `Wallet` is the Fuel b256 address derived from the Fuel key.
 - Submit the signature as `{ "Secp256k1": "0x..." }` even for EVM owners.
 - Do not pre-hash, prefix manually, or sign with the session key.
 
@@ -543,8 +683,8 @@ Direct call example using desired-net semantics:
 ```ts
 import { parseUnits, zeroPadValue } from "ethers";
 import { Contract } from "fuels";
-import AssetRegistryAbi from "../../../fast-bridge-abis/AssetRegistry-abi.json";
-import GasOracleAbi from "../../../fast-bridge-abis/GasOracle-abi.json";
+import AssetRegistryAbi from "./abis/AssetRegistry-abi.json";
+import GasOracleAbi from "./abis/GasOracle-abi.json";
 
 const desiredNetAmount = parseUnits(userAmount, 9);
 const assetRegistry = new Contract(assetRegistryContractId, AssetRegistryAbi, wallet);

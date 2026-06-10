@@ -9,7 +9,7 @@ Use this skill for Rust integrations with the `o2-sdk` crate. Keep this focused 
 
 This skill is grounded in the Rust `o2-sdk` public API around `o2-sdk = "0.2.0"` and Rust 1.75+.
 
-For full REST/signing background, read `../../../references/o2-skills.md` and `../../../references/o2-reference.md`.
+For deeper REST, signing, byte layout, endpoint, and error-code details, use `../../o2-reference/SKILL.md`.
 
 ## Install
 

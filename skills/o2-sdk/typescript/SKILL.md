@@ -9,7 +9,7 @@ Use this skill for O2 TypeScript setup and trading flows. Bridge-specific deposi
 
 This skill is grounded in `@o2exchange/sdk@0.1.0` public exports. If a method is from a local extension/helper rather than the stock SDK, say that explicitly.
 
-For full REST/signing details, read `../../../references/o2-skills.md` and `../../../references/o2-reference.md`.
+For deeper REST, signing, byte layout, endpoint, and error-code details, use `../../o2-reference/SKILL.md`.
 
 ## Install
 
