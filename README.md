@@ -21,13 +21,19 @@ npx skills add o2-exchange/skills
 
 ## Usage Examples
 
+### TypeScript Market Making Bot
+
 ```text
 I am building a TypeScript market-making bot on O2. Use o2-sdk-typescript to set up the owner signer, create a session key, fetch market metadata, and place post-only orders.
 ```
 
+### Base Native ETH Funding Flow
+
 ```text
 I run a bot from Base and want to fund its O2 trading account with native ETH before rotating into trading collateral on O2. Use o2-fast-bridge-deposits and show the depositETH flow for my O2 trading account (trade_account_id).
 ```
+
+### Cross-chain multi-asset Flow
 
 ```text
 I manage multiple trading bots and need to bridge USDC from Ethereum mainnet into one trading account, then withdraw profits later to a Base EVM address. Use o2-fast-bridge-deposits for the Ethereum USDC funding flow and o2-fast-bridge-withdrawals for the owner-signed USDC withdrawal flow.
