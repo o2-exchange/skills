@@ -3,6 +3,7 @@
   "skills": [
     "./skills/o2-reference",
     "./skills/o2-sdk/typescript",
+    "./skills/o2-sdk/python",
     "./skills/o2-sdk/rust",
     "./skills/fast-bridge/deposits",
     "./skills/fast-bridge/withdrawals"
