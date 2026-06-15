@@ -8,27 +8,31 @@ Skills for helping agents guide O2 traders through SDK usage and fast-bridge fun
 npx skills add o2-exchange/skills
 ```
 
-## Reference
+## Skills Included
 
-### O2 Reference
+### Core O2 Docs
 
-- **[o2-reference](./skills/o2-reference/SKILL.md)** — Shared O2 public docs for API/session/signing details used by the SDK and bridge skills.
+- **[o2-reference](./skills/o2-reference/SKILL.md)**
+  Shared O2 API, session, and signing reference material used by the SDK and bridge skills.
 
-### O2 SDK
+### O2 SDK Guides
 
-- **[o2-sdk-typescript](./skills/o2-sdk/typescript/SKILL.md)** — TypeScript reference for O2 SDK setup, owner signers, trading accounts, sessions, markets, balances, orders, nonce recovery, and account actions.
-- **[o2-sdk-rust](./skills/o2-sdk/rust/SKILL.md)** — Rust reference for O2 SDK setup, owner wallets, trading accounts, sessions, markets, balances, orders, nonce recovery, stock withdrawals, and streams.
+- **[o2-sdk-typescript](./skills/o2-sdk/typescript/SKILL.md)**
+  Use this when building with the O2 SDK in TypeScript: account setup, owner signers, sessions, markets, balances, orders, nonce recovery, and account actions.
 
-### Fast Bridge
+- **[o2-sdk-rust](./skills/o2-sdk/rust/SKILL.md)**
+  Use this when building with the O2 SDK in Rust: owner wallets, trading accounts, sessions, balances, orders, withdrawals, and streams.
 
-- **[o2-fast-bridge-deposits](./skills/fast-bridge/deposits/SKILL.md)** — Explain EVM source-chain deposits into O2/Fuel, including O2 `trade_account_id` contract recipients, `recipientIsContract`, source-token decimals, caps, whitelists, and relayer timing.
-- **[o2-fast-bridge-withdrawals](./skills/fast-bridge/withdrawals/SKILL.md)** — Explain O2 trading-account withdrawals to EVM chains, including how to replicate a `withdrawToChain`-style helper until native SDK support ships, owner signer vs session key, `trade_account_id`, fees, 9-decimal amounts, recipient encoding, and unwrap vs bridge.
+### Fast-Bridge Guides
 
-### References
+- **[o2-fast-bridge-deposits](./skills/fast-bridge/deposits/SKILL.md)**
+  Use this for EVM-to-O2 deposits: `trade_account_id` recipients, `recipientIsContract`, token decimals, caps, whitelists, and relayer timing.
 
-- O2 public reference docs are bundled inside the `o2-reference` skill so SDK skills do not duplicate them.
+- **[o2-fast-bridge-withdrawals](./skills/fast-bridge/withdrawals/SKILL.md)**
+  Use this for O2-to-EVM withdrawals: owner signer vs session key, `trade_account_id`, fee quoting, 9-decimal amounts, recipient encoding, and unwrap vs bridge.
 
-### Fast Bridge ABIs
+## Notes
 
-- Bridge ABI fragments live inside the bridge skill folders that use them:
+- The shared O2 reference docs live inside `o2-reference`, so the SDK skills do not repeat the same API and signing details.
+- Fast-bridge ABI files are bundled with the bridge skills that use them:
   `skills/fast-bridge/deposits/abis/` and `skills/fast-bridge/withdrawals/abis/`.
