@@ -19,6 +19,20 @@ npx skills add o2-exchange/skills
 | [o2-fast-bridge-deposits](./skills/fast-bridge/deposits/SKILL.md) | Moving funds from an EVM chain into an O2 trading account, with TypeScript, Python, and Rust reference flows for deposits. |
 | [o2-fast-bridge-withdrawals](./skills/fast-bridge/withdrawals/SKILL.md) | Moving funds from an O2 trading account back to an EVM chain, with TypeScript, Python, and Rust reference flows for fee quotes and withdrawals. |
 
+## Usage Examples
+
+```text
+I am building a TypeScript market-making bot on O2. Use o2-sdk-typescript to set up the owner signer, create a session key, fetch market metadata, and place post-only orders.
+```
+
+```text
+I run a bot from Base and want to fund its O2 trading account with native ETH before rotating into trading collateral on O2. Use o2-fast-bridge-deposits and show the depositETH flow for my O2 trading account (trade_account_id).
+```
+
+```text
+I manage multiple trading bots and need to bridge USDC from Ethereum mainnet into one trading account, then withdraw profits later to a Base EVM address. Use o2-fast-bridge-deposits for the Ethereum USDC funding flow and o2-fast-bridge-withdrawals for the owner-signed USDC withdrawal flow.
+```
+
 ## Notes
 
 - The shared O2 reference docs live inside `o2-reference`, so the SDK skills do not repeat the same API and signing details.
