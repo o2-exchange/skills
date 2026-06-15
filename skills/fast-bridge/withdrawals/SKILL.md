@@ -42,6 +42,8 @@ Python helper flow:
 pip install o2-sdk web3 python-dotenv
 ```
 
+Python 3.10+ required.
+
 Rust helper flow:
 
 ```bash
@@ -60,6 +62,7 @@ Important implementation rules:
 - The O2 API JSON uses a normal EVM address string. The AssetRegistry calldata uses that same address left-padded to 32 bytes.
 - Python implementations should require `forc` CLI for the fee-quote step.
 - Reason: this flow does not currently have a practical Python Fuel deployed-contract client equivalent to the JS/Rust `GasOracle.get_withdrawal_fee(...)` path.
+- If using an EVM owner, make sure the submitted `Secp256k1` signature is the 64-byte compact Fuel form, not a raw 65-byte Ethereum `personal_sign` output.
 - In Rust, a GasOracle fee quote may require `Execution::state_read_only()` and explicit dependency contract IDs instead of a default `.call()`.
 - Do not feed shortened display addresses such as `0xb66c…d0d7` back into calldata or API payloads. Always use full `0x...` hex strings.
 

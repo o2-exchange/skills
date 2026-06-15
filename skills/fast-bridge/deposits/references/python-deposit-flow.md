@@ -1,5 +1,7 @@
 # Python Fast-Bridge Deposit Flow
 
+Python 3.10+ required.
+
 ## Install Dependencies
 
 Add the packages used by this reference flow:
@@ -23,9 +25,18 @@ client = O2Client(network=Network.MAINNET)
 owner = client.load_evm_wallet(owner_private_key)
 account = await client.setup_account(owner)
 trade_account_id = account.trade_account_id
+trade_account_id_bytes = bytes.fromhex(trade_account_id.removeprefix("0x"))
 
 w3 = Web3(Web3.HTTPProvider(BASE_RPC_URL))
 evm_account = w3.eth.account.from_key(owner_private_key)
+```
+
+Expected setup result:
+
+```json
+{
+  "trade_account_id": "0x..."
+}
 ```
 
 Load the bundled ABIs:
@@ -88,7 +99,7 @@ if allowance < amount:
     w3.eth.wait_for_transaction_receipt(approve_hash)
 
 deposit_tx = messenger.functions.deposit(
-    trade_account_id,
+    trade_account_id_bytes,
     Web3.to_checksum_address(BASE_USDC_ADDRESS),
     amount,
     True,
@@ -102,7 +113,7 @@ deposit_tx = messenger.functions.deposit(
 
 deposit_tx["gas"] = int(
     messenger.functions.deposit(
-        trade_account_id,
+        trade_account_id_bytes,
         Web3.to_checksum_address(BASE_USDC_ADDRESS),
         amount,
         True,
@@ -121,7 +132,7 @@ print(receipt["transactionHash"].hex())
 value = w3.to_wei("0.01", "ether")
 
 deposit_tx = messenger.functions.depositETH(
-    trade_account_id,
+    trade_account_id_bytes,
     True,
 ).build_transaction(
     {
@@ -136,6 +147,7 @@ deposit_tx = messenger.functions.depositETH(
 What matters:
 
 - Use `trade_account_id` as the default O2 recipient.
+- For `web3.py`, convert `trade_account_id` from `0x...` hex to raw `bytes32` before calling `deposit(...)` or `depositETH(...)`.
 - Set `recipientIsContract=True` for an O2 trading account.
 - Deposit amounts use source-token EVM decimals, not 9 decimals.
 - After the source transaction confirms, O2 crediting is asynchronous.

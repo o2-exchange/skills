@@ -1,5 +1,7 @@
 # Python Fast-Bridge Withdrawal Flow
 
+Python 3.10+ required.
+
 ## Install Dependencies
 
 Add the packages used by this reference flow:
@@ -12,7 +14,7 @@ Also require `forc` CLI for the fee-quote step.
 
 ## Setup
 
-Use the Python SDK for owner identity, account setup, balances, and nonce access.
+This is an SDK-based reference. It uses the Python SDK for owner identity, account setup, signing helpers, and account lookups. For the underlying byte layout, see `../SKILL.md`.
 
 ```python
 import hashlib
@@ -32,6 +34,14 @@ client = O2Client(network=Network.MAINNET)
 owner = client.load_evm_wallet(owner_private_key)
 account = await client.setup_account(owner)
 trade_account_id = account.trade_account_id
+```
+
+Expected setup result:
+
+```json
+{
+  "trade_account_id": "0x..."
+}
 ```
 
 ## Resolve The Wrapped Asset
@@ -104,13 +114,28 @@ Important argument detail:
 AssetId argument syntax for forc call: '{<wrappedAssetId>}'
 ```
 
+Assumptions:
+
+- The ABI path above assumes your current working directory is the root of the cloned `o2-skills` repo.
+- `0x801af4ee92bd9e64ac16b65f490d4cd7dae791662ffbc8f70e20cdb7a6b7fa8c` is the current mainnet dependency contract used by this GasOracle read path. Treat it as version-sensitive and re-check if the GasOracle implementation changes.
+
 ## Fetch Nonce And O2 Chain ID
 
 ```python
 nonce = await client.get_nonce(trade_account_id)
+
 markets = await client.api.get_markets()
-o2_chain_id = markets.chain_id_int
+chain_id_raw = markets["chain_id"] if isinstance(markets, dict) else markets.chain_id
+o2_chain_id = int(chain_id_raw, 16) if isinstance(chain_id_raw, str) and chain_id_raw.startswith("0x") else int(chain_id_raw)
 ```
+
+If you are not using the SDK helper for nonce, fetch it from:
+
+```text
+GET https://api.o2.app/v1/accounts?trade_account_id=<trade_account_id>
+```
+
+Read it defensively from `response.nonce` or `response.trade_account.nonce`.
 
 ## Build The AssetRegistry Call Data
 
@@ -143,6 +168,33 @@ call_data = (
 ## Build The Owner Signing Bytes
 
 ```python
+def u64_be(value: int) -> bytes:
+    return value.to_bytes(8, "big", signed=False)
+
+def selector_bytes(name: str) -> bytes:
+    encoded = name.encode("utf-8")
+    return u64_be(len(encoded)) + encoded
+
+def build_actions_signing_bytes(nonce: int, calls: list[dict]) -> bytes:
+    parts = [u64_be(nonce), u64_be(len(calls))]
+    for call in calls:
+        call_data = call.get("call_data")
+        parts.extend(
+            [
+                call["contract_id"],
+                u64_be(len(call["function_selector"])),
+                call["function_selector"],
+                u64_be(call["amount"]),
+                call["asset_id"],
+                u64_be(call["gas"]),
+            ]
+        )
+        if call_data is None:
+            parts.append(u64_be(0))
+        else:
+            parts.extend([u64_be(1), u64_be(len(call_data)), call_data])
+    return b"".join(parts)
+
 withdraw_selector = function_selector("withdraw_via_fast_bridge_with_fee")
 
 calls_signing_bytes = build_actions_signing_bytes(
@@ -169,6 +221,13 @@ signing_bytes = (
 signature = owner.personal_sign(signing_bytes)
 signature_hex = "0x" + signature.hex()
 ```
+
+For EVM owners, be explicit about the signature format:
+
+- Ethereum `personal_sign` normally returns 65 bytes: `r || s || v`.
+- O2 expects Fuel's 64-byte compact Secp256k1 format in the JSON payload.
+- If your SDK helper already returns the compact 64-byte form, use it directly.
+- If it returns a 65-byte Ethereum signature, convert it before submitting.
 
 ## Submit The O2 Account Action
 
