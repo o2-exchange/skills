@@ -2,6 +2,12 @@
 
 Skills for helping agents guide O2 traders through SDK usage and fast-bridge funding/withdrawal flows.
 
+## Install
+
+```bash
+npx skills add o2-exchange/skills
+```
+
 ## Reference
 
 ### O2 Reference
