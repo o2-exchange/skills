@@ -8,6 +8,8 @@ Add the packages used by this reference flow:
 pip install o2-sdk web3 python-dotenv
 ```
 
+Also require `forc` CLI for the fee-quote step.
+
 ## Setup
 
 Use the Python SDK for owner identity, account setup, balances, and nonce access.
@@ -47,32 +49,59 @@ wrapped_asset_id = "0x" + hashlib.sha256(
 
 ## Fetch The Fee Quote From `GasOracle`
 
-Use the `skills/fast-bridge/withdrawals/abis/GasOracle-abi.json` ABI with your Fuel Python contract client.
+For Python in this skill, use `forc call` instead of assuming a Python Fuel deployed-contract client.
 
 ```python
-# Replace these with the Fuel Python provider / contract types you use.
-fuel_provider = FuelProvider(FUEL_RPC_URL)
-gas_oracle = FuelContract(
-    GAS_ORACLE_CONTRACT_ID,
-    gas_oracle_abi,
-    fuel_provider,
+import json
+import subprocess
+
+result = subprocess.run(
+    [
+        "forc",
+        "call",
+        GAS_ORACLE_CONTRACT_ID,
+        "--mainnet",
+        "--abi",
+        "skills/fast-bridge/withdrawals/abis/GasOracle-abi.json",
+        "get_withdrawal_fee",
+        str(BASE_CHAIN_ID),
+        "{" + wrapped_asset_id + "}",
+        "--external-contracts",
+        "0x801af4ee92bd9e64ac16b65f490d4cd7dae791662ffbc8f70e20cdb7a6b7fa8c",
+        "--mode",
+        "dry-run",
+        "-o",
+        "json",
+    ],
+    capture_output=True,
+    text=True,
+    check=True,
 )
 
-fee_quote = int(
-    (
-        await gas_oracle.functions
-        .get_withdrawal_fee(BASE_CHAIN_ID, {"bits": wrapped_asset_id})
-        .get()
-    ).value
-)
+fee_quote = None
+for line in result.stdout.splitlines():
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    parsed = json.loads(line)
+    if "result" in parsed:
+        fee_quote = int(parsed["result"])
+        break
+    message = (parsed.get("fields") or {}).get("message")
+    if isinstance(message, str) and message.startswith("result::"):
+        fee_quote = int(message.split("::", 1)[1].strip())
+        break
+
+if fee_quote is None:
+    raise RuntimeError("Could not parse fee quote from forc output")
 
 gross_debit = desired_net_amount + fee_quote
 ```
 
-The important call is:
+Important argument detail:
 
 ```text
-GasOracle.get_withdrawal_fee(destination_chain_id, wrapped_asset_id)
+AssetId argument syntax for forc call: '{<wrappedAssetId>}'
 ```
 
 ## Fetch Nonce And O2 Chain ID

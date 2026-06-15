@@ -58,6 +58,8 @@ Important implementation rules:
 - The actual trading-account debit is `grossDebit = desiredNetAmount + feeQuote`.
 - Fast-bridge withdrawal uses the universal wrapped symbol such as `uwUSDC`, not the market label alone.
 - The O2 API JSON uses a normal EVM address string. The AssetRegistry calldata uses that same address left-padded to 32 bytes.
+- Python implementations should require `forc` CLI for the fee-quote step.
+- Reason: this flow does not currently have a practical Python Fuel deployed-contract client equivalent to the JS/Rust `GasOracle.get_withdrawal_fee(...)` path.
 - In Rust, a GasOracle fee quote may require `Execution::state_read_only()` and explicit dependency contract IDs instead of a default `.call()`.
 - Do not feed shortened display addresses such as `0xb66c…d0d7` back into calldata or API payloads. Always use full `0x...` hex strings.
 
@@ -348,6 +350,10 @@ External calls needed by the helper:
 3. Fetch fast-bridge fee
    Preferred: use a Fuel contract library with ./abis/GasOracle-abi.json:
      GasOracle.get_withdrawal_fee(destination_chain, { bits: wrappedAssetId })
+
+   Python path in this skill: use `forc call` for the fee quote:
+     forc call <GasOracle> --mainnet --abi ./abis/GasOracle-abi.json get_withdrawal_fee <chain_id> '{<wrappedAssetId>}' --external-contracts <dependency_contract_id> --mode dry-run -o json
+   Parse `result` as `feeQuote`.
 
    If building a true raw Fuel read transaction:
      contract_id: GasOracle
