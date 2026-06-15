@@ -26,10 +26,10 @@ npx skills add o2-exchange/skills
 ### Fast-Bridge Guides
 
 - **[o2-fast-bridge-deposits](./skills/fast-bridge/deposits/SKILL.md)**
-  Use this for EVM-to-O2 deposits: `trade_account_id` recipients, `recipientIsContract`, token decimals, caps, whitelists, and relayer timing.
+  Use this for moving funds from an EVM chain into an O2 trading account. It includes reference flows in both TypeScript and Rust for implementing deposits correctly.
 
 - **[o2-fast-bridge-withdrawals](./skills/fast-bridge/withdrawals/SKILL.md)**
-  Use this for O2-to-EVM withdrawals: owner signer vs session key, `trade_account_id`, fee quoting, 9-decimal amounts, recipient encoding, and unwrap vs bridge.
+  Use this for moving funds from an O2 trading account back to an EVM chain. It includes reference flows in both TypeScript and Rust for quoting fees and submitting withdrawals.
 
 ## Notes
 
