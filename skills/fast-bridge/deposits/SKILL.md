@@ -17,6 +17,27 @@ Use these bundled ABIs when writing code:
 ./abis/IERC20Permit.json
 ```
 
+For reference snippets see:
+
+```text
+./references/typescript-deposit-flow.md
+./references/rust-deposit-flow.md
+```
+
+## Install Dependencies
+
+TypeScript / JavaScript:
+
+```bash
+npm install @o2exchange/sdk ethers
+```
+
+Rust:
+
+```bash
+cargo add anyhow ethers o2-sdk tokio
+```
+
 ## User Action
 
 The user sends one source-chain EVM transaction to `Messenger`.

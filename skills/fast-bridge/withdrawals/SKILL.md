@@ -20,6 +20,37 @@ Use these bundled ABIs when writing bridge code:
 
 These are full Fuel ABIs so `fuels.Interface`, generated bindings, or equivalent ABI tooling can derive `selectorBytes` and encode arguments directly.
 
+## Install
+
+Use the minimal dependency set for the implementation style you are writing.
+
+TypeScript / JavaScript helper flow:
+
+```bash
+npm install @o2exchange/sdk @o2exchange/contracts ethers fuels
+```
+
+Rust helper flow:
+
+```bash
+cargo add anyhow ethers fuels o2-sdk rand reqwest serde serde_json sha2 tokio
+```
+
+## Practical Notes
+
+Treat the code in this skill as protocol guidance, not as guaranteed copy-paste code. Verify the current O2 SDK / contracts package version, `fuels-ts` / `fuels-rs` version, and live Fuel node behavior before assuming an example will run unchanged.
+
+Important implementation rules:
+
+- Withdrawal input amount is the desired net EVM-side amount in 9-decimal wrapped units unless the caller explicitly says otherwise.
+- The actual trading-account debit is `grossDebit = desiredNetAmount + feeQuote`.
+- Fast-bridge withdrawal uses the universal wrapped symbol such as `uwUSDC`, not the market label alone.
+- The O2 API JSON uses a normal EVM address string. The AssetRegistry calldata uses that same address left-padded to 32 bytes.
+- In Rust, a GasOracle fee quote may require `Execution::state_read_only()` and explicit dependency contract IDs instead of a default `.call()`.
+- Do not feed shortened display addresses such as `0xb66c…d0d7` back into calldata or API payloads. Always use full `0x...` hex strings.
+
+For compact Rust-specific walkthroughs, see `references/rust-withdrawal-flow.md` and `../deposits/references/rust-deposit-flow.md`.
+
 If an implementation does not want to install the full Fuel ABI encoding stack, this skill provides the pieces needed to build the signed withdrawal payload manually:
 
 - precomputed Fuel `selectorBytes` values for the signed withdrawal path

@@ -1,6 +1,42 @@
 # Rust Fast-Bridge Withdrawal Flow
 
-These snippets are the tested Rust withdrawal path without CLI/env boilerplate.
+Use this reference when implementing an owner-signed O2 fast-bridge withdrawal from an O2 trading account to an EVM address.
+
+## Install Dependencies
+
+Add the crates used by the reference flow:
+
+```bash
+cargo add anyhow ethers fuels o2-sdk rand reqwest serde serde_json sha2 tokio
+```
+
+If you prefer a manifest snippet instead of `cargo add`, use:
+
+```toml
+[dependencies]
+anyhow = "1"
+ethers = { version = "2", default-features = false, features = ["abigen", "rustls"] }
+fuels = "0.77"
+o2-sdk = "0.2"
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+```
+
+## Before You Start
+
+Keep these rules straight before writing code:
+
+- Use the EVM owner wallet that owns the O2 account. The owner signs the withdrawal.
+- Withdrawals use the O2 `trade_account_id`, not the owner address.
+- Fast-bridge withdrawals use universal wrapped symbols such as `uwUSDC`, not plain `USDC`.
+- Withdrawal amounts in this flow use 9 decimals.
+- Treat the user input as the desired net EVM-side amount, then compute `gross_debit = desired_net_amount + fee_quote`.
+- Use a full `0x...` EVM address string in code. Do not reuse shortened display strings such as `0xb66c…d0d7`.
+- This flow is version-sensitive. Verify the current `o2-sdk`, `fuels-rs`, and Fuel node behavior before assuming a snippet will run unchanged.
 
 ## Imports And Constants
 
@@ -82,7 +118,11 @@ async fn ensure_trade_account_id<W: SignableWallet>(
 `FAST_BRIDGE_ASSET_SYMBOL` is `uwUSDC`, not `USDC`. Amounts use 9 decimals.
 
 ```rust
-async fn quote_withdraw(amount: &str, recipient_address: &str) -> Result<QuoteOutput> {
+async fn quote_withdraw(
+    trade_account_id: &str,
+    amount: &str,
+    recipient_address: &str,
+) -> Result<QuoteOutput> {
     let asset_sub_id = sha256_hex(FAST_BRIDGE_ASSET_SYMBOL.as_bytes());
     let wrapped_asset_id = sha256_hex(
         &[
@@ -98,12 +138,15 @@ async fn quote_withdraw(amount: &str, recipient_address: &str) -> Result<QuoteOu
         .ok_or_else(|| anyhow!("withdraw gross debit overflow"))?;
 
     Ok(QuoteOutput {
+        trade_account_id: trade_account_id.to_owned(),
         recipient_address: recipient_address.to_owned(),
         asset: FAST_BRIDGE_ASSET_SYMBOL,
         desired_net_amount: amount.to_owned(),
         desired_net_amount_raw: desired_net_amount.to_string(),
         fee_quote_raw: fee_quote.to_string(),
         gross_debit_raw: gross_debit.to_string(),
+        fee_quote_human_9: format_decimal_9(fee_quote),
+        gross_debit_human_9: format_decimal_9(gross_debit),
         asset_sub_id,
         wrapped_asset_id,
     })
@@ -112,7 +155,13 @@ async fn quote_withdraw(amount: &str, recipient_address: &str) -> Result<QuoteOu
 
 ## Fetch Fee
 
-The tested Rust flow uses generated Fuel bindings and includes the GasOracle dependency contract ID for simulation.
+The Fuel-side fee quote is the most version-sensitive part of the Rust flow.
+
+Important notes:
+
+- Use generated Fuel bindings with the bundled ABI.
+- Use `Execution::state_read_only()` for the quote path so the read does not require a funded Fuel account.
+- Include the dependency contract IDs explicitly. Do not assume a plain `.call()` or `determine_missing_contracts()` will work unchanged on mainnet.
 
 ```rust
 async fn fetch_withdraw_fee(wrapped_asset_id: &str) -> Result<u64> {
@@ -130,11 +179,10 @@ async fn fetch_withdraw_fee(wrapped_asset_id: &str) -> Result<u64> {
         .map_err(|err| anyhow!("invalid wrapped asset id: {err}"))?;
 
     let gas_oracle = GasOracleContract::new(contract_id.into(), view_wallet);
-    let call = gas_oracle
+    let mut call = gas_oracle
         .methods()
         .get_withdrawal_fee(BASE_CHAIN_ID, asset_id)
         .with_contract_ids(&[dependency_contract_id]);
-    let mut call = call;
     let response = call.simulate(Execution::state_read_only()).await?;
 
     Ok(response.value)
@@ -206,7 +254,7 @@ async fn fetch_o2_chain_id() -> Result<u64> {
 
 ## Build Calldata
 
-Recipient is a normal EVM address for the O2 API, but a 32-byte left-padded EVM address inside AssetRegistry calldata.
+The O2 API JSON uses a normal EVM address string. The AssetRegistry calldata uses that same address left-padded to 32 bytes.
 
 ```rust
 fn build_withdraw_calldata(
@@ -228,6 +276,10 @@ fn left_pad_evm_address(address: &str) -> Result<[u8; 32]> {
     let mut padded = [0u8; 32];
     padded[12..].copy_from_slice(addr.as_bytes());
     Ok(padded)
+}
+
+fn format_evm_address(address: EvmAddress) -> String {
+    format!("{:#x}", address)
 }
 ```
 
@@ -262,6 +314,8 @@ let signature_hex = to_hex_string(&signature);
 ```
 
 ## Submit O2 Action
+
+This reference sends raw integer strings for `amount` and `fee_quote`.
 
 ```rust
 let body = json!({
@@ -310,6 +364,8 @@ if !status.is_success() {
 
 ## Utility Helpers
 
+Keep helpers strict about parsing and scaling.
+
 ```rust
 fn sha256_hex(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
@@ -318,6 +374,11 @@ fn sha256_hex(data: &[u8]) -> String {
 }
 
 fn parse_u64(value: &str, label: &str) -> Result<u64> {
+    if let Some(stripped) = value.strip_prefix("0x") {
+        return u64::from_str_radix(stripped, 16)
+            .with_context(|| format!("invalid {label}: {value}"));
+    }
+
     value
         .parse::<u64>()
         .with_context(|| format!("invalid {label}: {value}"))
@@ -372,5 +433,16 @@ fn scale_decimal_9(input: &str) -> Result<u64> {
         .ok_or_else(|| anyhow!("Amount overflows u64"))?;
 
     u64::try_from(scaled).context("Amount overflows u64")
+}
+
+fn format_decimal_9(value: u64) -> String {
+    let whole = value / 1_000_000_000;
+    let frac = value % 1_000_000_000;
+    if frac == 0 {
+        return whole.to_string();
+    }
+
+    let frac_text = format!("{frac:09}").trim_end_matches('0').to_string();
+    format!("{whole}.{frac_text}")
 }
 ```
