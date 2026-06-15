@@ -20,16 +20,19 @@ npx skills add o2-exchange/skills
 - **[o2-sdk-typescript](./skills/o2-sdk/typescript/SKILL.md)**
   Use this when building with the O2 SDK in TypeScript: account setup, owner signers, sessions, markets, balances, orders, nonce recovery, and account actions.
 
+- **[o2-sdk-python](./skills/o2-sdk/python/SKILL.md)**
+  Use this when building with the O2 SDK in Python: owner wallets, trading accounts, sessions, balances, orders, withdrawals, and batch actions.
+
 - **[o2-sdk-rust](./skills/o2-sdk/rust/SKILL.md)**
   Use this when building with the O2 SDK in Rust: owner wallets, trading accounts, sessions, balances, orders, withdrawals, and streams.
 
 ### Fast-Bridge Guides
 
 - **[o2-fast-bridge-deposits](./skills/fast-bridge/deposits/SKILL.md)**
-  Use this for moving funds from an EVM chain into an O2 trading account. It includes reference flows in both TypeScript and Rust for implementing deposits correctly.
+  Use this for moving funds from an EVM chain into an O2 trading account. It includes reference flows in TypeScript, Python, and Rust for implementing deposits correctly.
 
 - **[o2-fast-bridge-withdrawals](./skills/fast-bridge/withdrawals/SKILL.md)**
-  Use this for moving funds from an O2 trading account back to an EVM chain. It includes reference flows in both TypeScript and Rust for quoting fees and submitting withdrawals.
+  Use this for moving funds from an O2 trading account back to an EVM chain. It includes reference flows in TypeScript, Python, and Rust for quoting fees and submitting withdrawals.
 
 ## Notes
 

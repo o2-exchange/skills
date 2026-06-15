@@ -7,7 +7,12 @@ description: Explains O2 fast bridge deposits from an EVM source chain into O2/F
 
 Use this skill when an agent must help a trader fund O2 from an EVM chain through the fast bridge.
 
-For O2 TypeScript account setup and `trade_account_id` discovery, use `../../o2-sdk/typescript/SKILL.md`. This skill is focused on the fast bridge deposit flow only.
+For O2 account setup and `trade_account_id` discovery, use:
+
+- `../../o2-sdk/typescript/SKILL.md`
+- `../../o2-sdk/python/SKILL.md`
+
+This skill is focused on the fast bridge deposit flow only.
 
 Use these bundled ABIs when writing code:
 
@@ -20,6 +25,7 @@ Use these bundled ABIs when writing code:
 For reference snippets see:
 
 ```text
+./references/python-deposit-flow.md
 ./references/typescript-deposit-flow.md
 ./references/rust-deposit-flow.md
 ```
@@ -30,6 +36,12 @@ TypeScript / JavaScript:
 
 ```bash
 npm install @o2exchange/sdk ethers
+```
+
+Python:
+
+```bash
+pip install o2-sdk web3
 ```
 
 Rust:

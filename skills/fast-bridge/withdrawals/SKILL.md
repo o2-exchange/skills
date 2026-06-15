@@ -7,7 +7,13 @@ description: Explains O2 fast bridge withdrawals from O2/Fuel to EVM chains. Use
 
 Use this skill when a trader wants to move funds out of O2/Fuel to an EVM chain.
 
-For O2 SDK setup, sessions, markets, orders, nonces, and signer rules, use `../../o2-sdk/typescript/SKILL.md` or `../../o2-sdk/rust/SKILL.md`. This skill covers the fast-bridge withdrawal parts.
+For O2 SDK setup, sessions, markets, orders, nonces, and signer rules, use:
+
+- `../../o2-sdk/typescript/SKILL.md`
+- `../../o2-sdk/python/SKILL.md`
+- `../../o2-sdk/rust/SKILL.md`
+
+This skill covers the fast-bridge withdrawal parts.
 
 Current important limitation: stock `@o2exchange/sdk@0.1.0` does not natively support fast-bridge withdrawals to EVM chains. Until native SDK support ships, agents should replicate the `withdrawToChain`-style helper flow described here by combining O2 SDK account/session primitives with the fast-bridge Fuel contract call and account-action API.
 
@@ -30,6 +36,12 @@ TypeScript / JavaScript helper flow:
 npm install @o2exchange/sdk @o2exchange/contracts ethers fuels
 ```
 
+Python helper flow:
+
+```bash
+pip install o2-sdk web3 python-dotenv
+```
+
 Rust helper flow:
 
 ```bash
@@ -49,7 +61,14 @@ Important implementation rules:
 - In Rust, a GasOracle fee quote may require `Execution::state_read_only()` and explicit dependency contract IDs instead of a default `.call()`.
 - Do not feed shortened display addresses such as `0xb66c…d0d7` back into calldata or API payloads. Always use full `0x...` hex strings.
 
-For compact Rust-specific walkthroughs, see `references/rust-withdrawal-flow.md` and `../deposits/references/rust-deposit-flow.md`.
+For compact language-specific walkthroughs, see:
+
+- `references/python-withdrawal-flow.md`
+- `references/typescript-withdrawal-flow.md`
+- `references/rust-withdrawal-flow.md`
+- `../deposits/references/python-deposit-flow.md`
+- `../deposits/references/typescript-deposit-flow.md`
+- `../deposits/references/rust-deposit-flow.md`
 
 If an implementation does not want to install the full Fuel ABI encoding stack, this skill provides the pieces needed to build the signed withdrawal payload manually:
 
