@@ -181,7 +181,7 @@ Read balances from the trading account contract:
 
 ```python
 balances = await client.get_balances(trade_account_id)
-orders = await client.get_orders(trade_account_id, market.pair, is_open=True)
+orders = await client.get_orders(market.pair, trade_account_id, is_open=True)
 ```
 
 Use `trade_account_id`, not owner `b256_address`, when the question is about funds or open orders inside O2.
