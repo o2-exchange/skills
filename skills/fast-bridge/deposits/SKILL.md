@@ -202,7 +202,7 @@ Relayer processing is asynchronous. Docs may say around 10 seconds, but producti
 Watch for:
 
 - token not whitelisted in `Messenger`
-- user cap or market-maker cap exceeded
+- user cap exceeded
 - missing ERC-20 allowance
 - wrong source-chain token address
 - wrong source-token decimals
@@ -210,6 +210,5 @@ Watch for:
 - amount exceeds `uint64` after normalization
 - owner `b256` accidentally used as `to` when the user meant to fund an O2 trading account
 - wrong `recipientIsContract`
-- assuming O2 crediting is immediate after the EVM receipt
 
 When answering, show only what the user must submit on the EVM source chain, then explain what condition passed or failed.
