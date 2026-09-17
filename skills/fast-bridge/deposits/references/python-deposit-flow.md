@@ -1,153 +1,87 @@
-# Python Fast-Bridge Deposit Flow
+# Python Fast Bridge Deposit
 
-Python 3.10+ required.
-
-## Install Dependencies
-
-Add the packages used by this reference flow:
-
-```bash
-pip install o2-sdk web3 python-dotenv
-```
-
-## Setup
+Use `FastBridgeClient` from `o2-sdk` 0.5 or newer. No additional cryptography package is required for the raw digest-signing path.
 
 ```python
-from o2_sdk import Network, O2Client
-from web3 import Web3
+import time
 
-MESSENGER_ADDRESS = "0x2B1c1E133F832EFB1e168dE6102304B03C4ba653"
-BASE_USDC_ADDRESS = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
-BASE_RPC_URL = "https://mainnet.base.org"
-BASE_CHAIN_ID = 8453
+from o2_sdk import (
+    FAST_BRIDGE_TESTNET_URL,
+    FastBridgeClient,
+    fuel_compact_sign,
+    parse_evm_unsigned_transaction,
+    parse_preparation_proof,
+)
+from o2_sdk.bridge.models import DepositPrepareRequest, SubmitRequest
 
-client = O2Client(network=Network.MAINNET)
-owner = client.load_evm_wallet(owner_private_key)
-account = await client.setup_account(owner)
-trade_account_id = account.trade_account_id
-trade_account_id_bytes = bytes.fromhex(trade_account_id.removeprefix("0x"))
 
-w3 = Web3(Web3.HTTPProvider(BASE_RPC_URL))
-evm_account = w3.eth.account.from_key(owner_private_key)
+async def deposit(evm_address, fuel_recipient, full_fuel_asset_id, private_key):
+    async with FastBridgeClient(FAST_BRIDGE_TESTNET_URL) as client:
+        request = DepositPrepareRequest(
+            source_chain_id=11155111,
+            from_address=evm_address,  # serializes as "from"
+            to=fuel_recipient,
+            to_type="address",        # "contract" for a Fuel contract
+            asset_id=full_fuel_asset_id,
+            amount="1000000",         # integer Fuel asset base units
+        )
+
+        prepared = await client.prepare_deposit(request)
+        claims = parse_preparation_proof(prepared.preparation_proof)
+        if claims.expires_at <= time.time():
+            raise ValueError("Prepare again: proof expired")
+
+        inspected = parse_evm_unsigned_transaction(prepared.unsigned_transaction)
+        print(inspected)
+        # Compare chain_id, nonce, messenger_address, method, recipient/type,
+        # token_address, amount/value, gas and fee caps with request and trusted
+        # configuration. Parsing itself is not approval.
+        if not approve_deposit(request, inspected):
+            raise ValueError("Prepared deposit does not match intent")
+
+        # Sign the locally computed raw digest. fuel_compact_sign returns r || yParityAndS.
+        compact = bytearray(
+            fuel_compact_sign(
+                private_key,
+                bytes.fromhex(inspected.signing_digest[2:]),
+            )
+        )
+        signature = compact
+        signature.append(27 + (signature[32] >> 7))
+        signature[32] &= 0x7F
+
+        submitted = await client.submit_deposit(
+            SubmitRequest(
+                unsigned_transaction=prepared.unsigned_transaction,
+                preparation_proof=prepared.preparation_proof,
+                signature="0x" + signature.hex(),
+            )
+        )
+        return submitted
 ```
 
-Expected setup result:
+Submit the exact unsigned transaction and proof returned by prepare. The 65-byte EVM signature is separate; do not submit a signed transaction envelope.
 
-```json
-{
-  "trade_account_id": "0x..."
-}
-```
-
-Load the bundled ABIs:
+## Status
 
 ```python
-import json
-from pathlib import Path
+from o2_sdk import BridgeApiError
 
-root = Path(".")
-with open(root / "skills/fast-bridge/deposits/abis/Messenger.json", "r") as f:
-    messenger_abi = json.load(f)["abi"]
-
-with open(root / "skills/fast-bridge/deposits/abis/IERC20Metadata.json", "r") as f:
-    erc20_abi = json.load(f)["abi"]
-
-messenger = w3.eth.contract(
-    address=Web3.to_checksum_address(MESSENGER_ADDRESS),
-    abi=messenger_abi,
-)
-
-token = w3.eth.contract(
-    address=Web3.to_checksum_address(BASE_USDC_ADDRESS),
-    abi=erc20_abi,
-)
-```
-
-## Deposit Base USDC
-
-```python
-from decimal import Decimal
-
-decimals = int(token.functions.decimals().call())
-amount_text = "0.5"
-amount = int(Decimal(amount_text) * (10 ** decimals))
-
-allowance = int(
-    token.functions.allowance(
-        evm_account.address,
-        Web3.to_checksum_address(MESSENGER_ADDRESS),
-    ).call()
-)
-
-if allowance < amount:
-    approve_tx = token.functions.approve(
-        Web3.to_checksum_address(MESSENGER_ADDRESS),
-        (1 << 256) - 1,
-    ).build_transaction(
-        {
-            "from": evm_account.address,
-            "chainId": BASE_CHAIN_ID,
-            "nonce": w3.eth.get_transaction_count(evm_account.address),
-        }
+try:
+    status = await client.get_deposit_status(
+        submitted.source_chain_id,
+        submitted.evm_tx_hash,
     )
-    approve_tx["gas"] = int(token.functions.approve(
-        Web3.to_checksum_address(MESSENGER_ADDRESS),
-        (1 << 256) - 1,
-    ).estimate_gas({"from": evm_account.address}) * 1.2)
-    signed_approve = evm_account.sign_transaction(approve_tx)
-    approve_hash = w3.eth.send_raw_transaction(signed_approve.raw_transaction)
-    w3.eth.wait_for_transaction_receipt(approve_hash)
-
-deposit_tx = messenger.functions.deposit(
-    trade_account_id_bytes,
-    Web3.to_checksum_address(BASE_USDC_ADDRESS),
-    amount,
-    True,
-).build_transaction(
-    {
-        "from": evm_account.address,
-        "chainId": BASE_CHAIN_ID,
-        "nonce": w3.eth.get_transaction_count(evm_account.address),
-    }
-)
-
-deposit_tx["gas"] = int(
-    messenger.functions.deposit(
-        trade_account_id_bytes,
-        Web3.to_checksum_address(BASE_USDC_ADDRESS),
-        amount,
-        True,
-    ).estimate_gas({"from": evm_account.address}) * 1.2
-)
-
-signed_deposit = evm_account.sign_transaction(deposit_tx)
-deposit_hash = w3.eth.send_raw_transaction(signed_deposit.raw_transaction)
-receipt = w3.eth.wait_for_transaction_receipt(deposit_hash)
-print(receipt["transactionHash"].hex())
+except BridgeApiError as error:
+    if error.status != 404:
+        raise
+    status = None  # not found, not fabricated pending
 ```
 
-## Deposit Native ETH
+Use bounded status polling. A submit timeout is ambiguous, so reconcile chain/status data before resubmitting.
 
-```python
-value = w3.to_wei("0.01", "ether")
+## Native ETH, ERC-20, And Permit
 
-deposit_tx = messenger.functions.depositETH(
-    trade_account_id_bytes,
-    True,
-).build_transaction(
-    {
-        "from": evm_account.address,
-        "chainId": BASE_CHAIN_ID,
-        "nonce": w3.eth.get_transaction_count(evm_account.address),
-        "value": value,
-    }
-)
-```
+The proxy selects `depositETH`, `deposit`, or `depositWithPermit` from its trusted route configuration. ERC-20 needs an existing Messenger allowance or a `DepositPermit` in the prepare request. That EIP-2612 permit is a separate token-approval signature, not the EVM transaction signature.
 
-What matters:
-
-- Use `trade_account_id` as the default O2 recipient.
-- For `web3.py`, convert `trade_account_id` from `0x...` hex to raw `bytes32` before calling `deposit(...)` or `depositETH(...)`.
-- Set `recipientIsContract=True` for an O2 trading account.
-- Deposit amounts use source-token EVM decimals, not 9 decimals.
-- After the source transaction confirms, O2 crediting is asynchronous.
+`parse_preparation_proof` exposes `version`, `key_id`, `expires_at`, and `signer` for display only. The claims are unauthenticated until the proxy verifies the proof's HMAC and exact transaction binding.

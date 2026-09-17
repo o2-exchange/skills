@@ -1,448 +1,73 @@
-# Rust Fast-Bridge Withdrawal Flow
+# Rust Fast Bridge Withdrawal
 
-Use this reference when implementing an owner-signed O2 fast-bridge withdrawal from an O2 trading account to an EVM address.
-
-## Install Dependencies
-
-Add the crates used by the reference flow:
-
-```bash
-cargo add anyhow ethers fuels o2-sdk rand reqwest serde serde_json sha2 tokio
-```
-
-If you prefer a manifest snippet instead of `cargo add`, use:
+Use `o2-sdk` 0.4 or newer. This flow spends a funded Fuel wallet, not an O2 trading account/session.
 
 ```toml
 [dependencies]
-anyhow = "1"
-ethers = { version = "2", default-features = false, features = ["abigen", "rustls"] }
-fuels = "0.77"
-o2-sdk = "0.2"
-rand = "0.8"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-sha2 = "0.10"
+o2-sdk = "0.4"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
-## Before You Start
-
-Keep these rules straight before writing code:
-
-- Use the EVM owner wallet that owns the O2 account. The owner signs the withdrawal.
-- Withdrawals use the O2 `trade_account_id`, not the owner address.
-- Fast-bridge withdrawals use universal wrapped symbols such as `uwUSDC`, not plain `USDC`.
-- Withdrawal amounts in this flow use 9 decimals.
-- Treat the user input as the desired net EVM-side amount, then compute `gross_debit = desired_net_amount + fee_quote`.
-- Use a full `0x...` EVM address string in code. Do not reuse shortened display strings such as `0xb66c…d0d7`.
-- This flow is version-sensitive. Verify the current `o2-sdk`, `fuels-rs`, and Fuel node behavior before assuming a snippet will run unchanged.
-
-## Imports And Constants
-
 ```rust
-use anyhow::{anyhow, bail, Context, Result};
-use ethers::{
-    signers::{LocalWallet, Signer},
-    types::Address as EvmAddress,
+use o2_sdk::bridge::{
+    parse_fuel_unsigned_transaction, parse_preparation_proof,
+    FastBridgeClient, SubmitRequest, WithdrawPrepareRequest,
 };
-use fuels::{
-    prelude::{abigen as fuels_abigen, Execution, Provider as FuelProvider, Wallet},
-    types::{AssetId, ContractId},
+use o2_sdk::crypto::{fuel_compact_sign, parse_hex_32, to_hex_string};
+use o2_sdk::FAST_BRIDGE_TESTNET_URL;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+let client = FastBridgeClient::new(FAST_BRIDGE_TESTNET_URL)?;
+let request = WithdrawPrepareRequest {
+    destination_chain_id: 11155111,
+    from_address: fuel_address,
+    to: evm_recipient,
+    asset_id: full_fuel_asset_id,
+    amount: "1000000".into(), // gross Fuel asset base units
 };
-use o2_sdk::{
-    crypto::{parse_hex_32, to_hex_string},
-    encoding::{build_actions_signing_bytes, function_selector, u64_be, CallArg, GAS_MAX},
-    Network, NetworkConfig, O2Client, SignableWallet, TradeAccountId,
-};
-use rand::thread_rng;
-use reqwest::header::{ACCEPT, CONTENT_TYPE};
-use serde::Deserialize;
-use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 
-const API_BASE: &str = "https://api.o2.app";
-const WS_URL: &str = "wss://api.o2.app/v1/ws";
-const FUEL_RPC_URL: &str = "https://mainnet.fuel.network/v1/graphql";
-const BASE_CHAIN_ID: u32 = 8453;
-const ASSET_REGISTRY_CONTRACT_ID: &str =
-    "0x91cfcbef2caad02996cdcb5b897222170e85a91cd2db8f23f07ea7d9ca030c19";
-const WRAPPED_ASSETS_MINTER_CONTRACT_ID: &str =
-    "0x0f9f509374c2da68997a3a1ad6d85be3f351c2f5f3da4c65bdbfad9b0bb25504";
-const GAS_ORACLE_CONTRACT_ID: &str =
-    "0x3d20e5a675c5fa1053fba11e176099711ba2f23112e385a7f6e2e759eca84f94";
-const GAS_ORACLE_DEPENDENCY_CONTRACT_ID: &str =
-    "0x801af4ee92bd9e64ac16b65f490d4cd7dae791662ffbc8f70e20cdb7a6b7fa8c";
-const FAST_BRIDGE_ASSET_SYMBOL: &str = "uwUSDC";
-const WITHDRAW_SELECTOR_HEX: &str =
-    "000000000000002177697468647261775f7669615f666173745f6272696467655f776974685f666565";
-```
-
-## GasOracle Binding
-
-Use the bundled full `GasOracle-abi.json`.
-
-```rust
-fuels_abigen!(Contract(
-    name = "GasOracleContract",
-    abi = ".agents/skills/o2-fast-bridge-withdrawals/abis/GasOracle-abi.json"
-));
-```
-
-## O2 Client And Account
-
-Use the EVM owner wallet that owns the O2 account. The SDK derives owner B256 as the left-padded EVM address and signs with Ethereum `personal_sign`.
-
-```rust
-fn build_o2_client() -> O2Client {
-    let mut cfg = NetworkConfig::from_network(Network::Mainnet);
-    cfg.api_base = API_BASE.into();
-    cfg.ws_url = WS_URL.into();
-    cfg.faucet_url = None;
-    O2Client::with_config(cfg)
+let prepared = client.prepare_withdraw(&request).await?;
+if prepared.fuel_chain_id.parse::<u64>()? != trusted_fuel_chain_id {
+    return Err("Unexpected Fuel chain".into());
 }
 
-async fn ensure_trade_account_id<W: SignableWallet>(
-    client: &mut O2Client,
-    owner_wallet: &W,
-) -> Result<TradeAccountId> {
-    let account = client.setup_account(owner_wallet).await?;
-    account
-        .trade_account_id
-        .ok_or_else(|| anyhow!("O2 setup_account did not return trade_account_id"))
+let claims = parse_preparation_proof(&prepared.preparation_proof)?;
+if claims.expires_at <= SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() {
+    return Err("Prepare again: proof expired".into());
 }
-```
 
-## Quote Withdrawal
+// trusted_max_inputs is consensus data not encoded in the transaction.
+let inspected = parse_fuel_unsigned_transaction(
+    &prepared.unsigned_transaction,
+    trusted_fuel_chain_id,
+    trusted_max_inputs,
+)?;
+println!("{inspected:#?}");
+// Check contract, route, asset, gross/fee/net amounts, fees, expiry, every input
+// owner/asset, and all outputs against request and trusted configuration.
+if !approve_withdrawal(&request, &inspected) {
+    return Err("Prepared withdrawal does not match intent".into());
+}
 
-`FAST_BRIDGE_ASSET_SYMBOL` is `uwUSDC`, not `USDC`. Amounts use 9 decimals.
-
-```rust
-async fn quote_withdraw(
-    trade_account_id: &str,
-    amount: &str,
-    recipient_address: &str,
-) -> Result<QuoteOutput> {
-    let asset_sub_id = sha256_hex(FAST_BRIDGE_ASSET_SYMBOL.as_bytes());
-    let wrapped_asset_id = sha256_hex(
-        &[
-            parse_hex_32(WRAPPED_ASSETS_MINTER_CONTRACT_ID)?.as_slice(),
-            parse_hex_32(&asset_sub_id)?.as_slice(),
-        ]
-        .concat(),
-    );
-    let desired_net_amount = scale_decimal_9(amount)?;
-    let fee_quote = fetch_withdraw_fee(&wrapped_asset_id).await?;
-    let gross_debit = desired_net_amount
-        .checked_add(fee_quote)
-        .ok_or_else(|| anyhow!("withdraw gross debit overflow"))?;
-
-    Ok(QuoteOutput {
-        trade_account_id: trade_account_id.to_owned(),
-        recipient_address: recipient_address.to_owned(),
-        asset: FAST_BRIDGE_ASSET_SYMBOL,
-        desired_net_amount: amount.to_owned(),
-        desired_net_amount_raw: desired_net_amount.to_string(),
-        fee_quote_raw: fee_quote.to_string(),
-        gross_debit_raw: gross_debit.to_string(),
-        fee_quote_human_9: format_decimal_9(fee_quote),
-        gross_debit_human_9: format_decimal_9(gross_debit),
-        asset_sub_id,
-        wrapped_asset_id,
+let signature = fuel_compact_sign(
+    &private_key,
+    &parse_hex_32(&inspected.transaction_id)?,
+)?;
+let submitted = client
+    .submit_withdraw(&SubmitRequest {
+        unsigned_transaction: prepared.unsigned_transaction,
+        preparation_proof: prepared.preparation_proof,
+        signature: to_hex_string(&signature),
     })
-}
-```
-
-## Fetch Fee
-
-The Fuel-side fee quote is the most version-sensitive part of the Rust flow.
-
-Important notes:
-
-- Use generated Fuel bindings with the bundled ABI.
-- Use `Execution::state_read_only()` for the quote path so the read does not require a funded Fuel account.
-- Include the dependency contract IDs explicitly. Do not assume a plain `.call()` or `determine_missing_contracts()` will work unchanged on mainnet.
-
-```rust
-async fn fetch_withdraw_fee(wrapped_asset_id: &str) -> Result<u64> {
-    let provider = FuelProvider::connect(FUEL_RPC_URL).await?;
-    let mut rng = thread_rng();
-    let view_wallet = Wallet::random(&mut rng, provider.clone());
-    let contract_id: ContractId = GAS_ORACLE_CONTRACT_ID
-        .parse()
-        .map_err(|err| anyhow!("invalid gas oracle contract id: {err}"))?;
-    let dependency_contract_id: ContractId = GAS_ORACLE_DEPENDENCY_CONTRACT_ID
-        .parse()
-        .map_err(|err| anyhow!("invalid gas oracle dependency contract id: {err}"))?;
-    let asset_id: AssetId = wrapped_asset_id
-        .parse()
-        .map_err(|err| anyhow!("invalid wrapped asset id: {err}"))?;
-
-    let gas_oracle = GasOracleContract::new(contract_id.into(), view_wallet);
-    let mut call = gas_oracle
-        .methods()
-        .get_withdrawal_fee(BASE_CHAIN_ID, asset_id)
-        .with_contract_ids(&[dependency_contract_id]);
-    let response = call.simulate(Execution::state_read_only()).await?;
-
-    Ok(response.value)
-}
-```
-
-## Fetch Nonce And O2 Chain ID
-
-Use the O2 API chain id from `/v1/markets`, not a raw Fuel provider chain id.
-
-```rust
-#[derive(Debug, Deserialize)]
-struct MarketsResponse {
-    chain_id: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct AccountResponse {
-    nonce: Option<Value>,
-    trade_account: Option<NestedNonce>,
-    account: Option<NestedNonce>,
-}
-
-#[derive(Debug, Deserialize)]
-struct NestedNonce {
-    nonce: Option<Value>,
-}
-
-async fn fetch_nonce(trade_account_id: &str) -> Result<u64> {
-    let http = reqwest::Client::new();
-    let response = http
-        .get(format!("{API_BASE}/v1/accounts?trade_account_id={}", trade_account_id))
-        .header(ACCEPT, "application/json")
-        .send()
-        .await?;
-    let status = response.status();
-    let payload: AccountResponse = response.json().await?;
-
-    if !status.is_success() {
-        bail!("GET /v1/accounts failed: {}", status.as_u16());
-    }
-
-    let nonce = payload
-        .nonce
-        .or_else(|| payload.trade_account.and_then(|inner| inner.nonce))
-        .or_else(|| payload.account.and_then(|inner| inner.nonce))
-        .ok_or_else(|| anyhow!("Could not read O2 account nonce"))?;
-
-    parse_value_u64(nonce, "nonce")
-}
-
-async fn fetch_o2_chain_id() -> Result<u64> {
-    let http = reqwest::Client::new();
-    let response = http
-        .get(format!("{API_BASE}/v1/markets"))
-        .header(ACCEPT, "application/json")
-        .send()
-        .await?;
-    let status = response.status();
-    let payload: MarketsResponse = response.json().await?;
-
-    if !status.is_success() {
-        bail!("GET /v1/markets failed: {}", status.as_u16());
-    }
-
-    parse_u64(&payload.chain_id, "chain_id")
-}
-```
-
-## Build Calldata
-
-The O2 API JSON uses a normal EVM address string. The AssetRegistry calldata uses that same address left-padded to 32 bytes.
-
-```rust
-fn build_withdraw_calldata(
-    asset_sub_id: &str,
-    destination_chain: u32,
-    recipient: &str,
-    fee_quote: u64,
-) -> Result<Vec<u8>> {
-    let mut bytes = Vec::with_capacity(76);
-    bytes.extend_from_slice(&parse_hex_32(asset_sub_id)?);
-    bytes.extend_from_slice(&destination_chain.to_be_bytes());
-    bytes.extend_from_slice(&left_pad_evm_address(recipient)?);
-    bytes.extend_from_slice(&fee_quote.to_be_bytes());
-    Ok(bytes)
-}
-
-fn left_pad_evm_address(address: &str) -> Result<[u8; 32]> {
-    let addr = EvmAddress::from_str(address).context("Invalid recipient address")?;
-    let mut padded = [0u8; 32];
-    padded[12..].copy_from_slice(addr.as_bytes());
-    Ok(padded)
-}
-
-fn format_evm_address(address: EvmAddress) -> String {
-    format!("{:#x}", address)
-}
-```
-
-## Sign Account Action
-
-`function_selector` is Fuel `selectorBytes`, not the 8-byte method hash.
-
-```rust
-let call = CallArg {
-    contract_id: parse_hex_32(ASSET_REGISTRY_CONTRACT_ID)?,
-    function_selector: hex::decode(WITHDRAW_SELECTOR_HEX)?,
-    amount: parse_u64(&quote.gross_debit_raw, "gross debit")?,
-    asset_id: parse_hex_32(&quote.wrapped_asset_id)?,
-    gas: GAS_MAX,
-    call_data: Some(build_withdraw_calldata(
-        &quote.asset_sub_id,
-        BASE_CHAIN_ID,
-        &recipient_address,
-        parse_u64(&quote.fee_quote_raw, "fee quote")?,
-    )?),
-};
-
-let action_bytes = build_actions_signing_bytes(nonce, &[call]);
-let mut signing_bytes = Vec::new();
-signing_bytes.extend_from_slice(&u64_be(nonce));
-signing_bytes.extend_from_slice(&u64_be(o2_chain_id));
-signing_bytes.extend_from_slice(&function_selector("call_contracts"));
-signing_bytes.extend_from_slice(&action_bytes[8..]);
-
-let signature = owner_wallet.personal_sign(&signing_bytes)?;
-let signature_hex = to_hex_string(&signature);
-```
-
-## Submit O2 Action
-
-This reference sends raw integer strings for `amount` and `fee_quote`.
-
-```rust
-let body = json!({
-    "actions": [{
-        "WithdrawViaFastBridgeWithFee": {
-            "amount": quote.gross_debit_raw,
-            "fee_quote": quote.fee_quote_raw,
-            "asset": {
-                "sub_id": quote.asset_sub_id,
-                "universal": quote.wrapped_asset_id,
-            },
-            "recipient": {
-                "Evm": {
-                    "chain_id": BASE_CHAIN_ID.to_string(),
-                    "recipient": { "address": recipient_address }
-                }
-            }
-        }
-    }],
-    "signature": { "Secp256k1": signature_hex },
-    "nonce": nonce.to_string(),
-    "trade_account_id": trade_account_id,
-    "variable_outputs": 1,
-    "contracts": [ASSET_REGISTRY_CONTRACT_ID],
-});
-
-let response = reqwest::Client::new()
-    .post(format!("{API_BASE}/v1/accounts/actions"))
-    .header(CONTENT_TYPE, "application/json")
-    .header(ACCEPT, "application/json")
-    .header("O2-Owner-Id", owner_b256)
-    .json(&body)
-    .send()
     .await?;
-
-let status = response.status();
-let response_json: Value = response.json().await.unwrap_or_else(|_| json!(null));
-if !status.is_success() {
-    bail!(
-        "POST /v1/accounts/actions failed: {} {}",
-        status.as_u16(),
-        response_json
-    );
-}
 ```
 
-## Utility Helpers
+Sign the locally computed raw transaction ID without extra hashing. Submit only the exact prepared bytes, exact proof, and compact signature.
 
-Keep helpers strict about parsing and scaling.
+## Status
 
-```rust
-fn sha256_hex(data: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(data);
-    format!("0x{}", hex::encode(hasher.finalize()))
-}
+Save `inspected.transaction_id` before submit. Use `client.get_withdraw_status(&inspected.transaction_id)` with bounded backoff. `BridgeError::Api { status: 404, .. }` means not found. A submit timeout is ambiguous; query status before resubmitting. Fuel inclusion and destination delivery are separate states.
 
-fn parse_u64(value: &str, label: &str) -> Result<u64> {
-    if let Some(stripped) = value.strip_prefix("0x") {
-        return u64::from_str_radix(stripped, 16)
-            .with_context(|| format!("invalid {label}: {value}"));
-    }
+The request amount is gross. Inspect `gross_amount`, `bridge_fee`, `net_amount`, and the separate `network_fee.max_fee`. If assets are held by an O2 trading account, first use normal `O2Client::withdraw(...)` to fund the owner Fuel wallet.
 
-    value
-        .parse::<u64>()
-        .with_context(|| format!("invalid {label}: {value}"))
-}
-
-fn parse_value_u64(value: Value, label: &str) -> Result<u64> {
-    match value {
-        Value::String(s) => parse_u64(&s, label),
-        Value::Number(n) => n
-            .as_u64()
-            .ok_or_else(|| anyhow!("invalid {label}: {n}")),
-        other => bail!("invalid {label}: {other}"),
-    }
-}
-
-fn scale_decimal_9(input: &str) -> Result<u64> {
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
-        bail!("Amount cannot be empty");
-    }
-    if trimmed.starts_with('-') {
-        bail!("Amount cannot be negative");
-    }
-
-    let mut parts = trimmed.split('.');
-    let whole = parts.next().unwrap_or("0");
-    let frac = parts.next().unwrap_or("");
-    if parts.next().is_some() {
-        bail!("Invalid decimal amount: {trimmed}");
-    }
-    if !whole.chars().all(|c| c.is_ascii_digit()) || !frac.chars().all(|c| c.is_ascii_digit()) {
-        bail!("Invalid decimal amount: {trimmed}");
-    }
-    if frac.len() > 9 {
-        bail!("Amount has more than 9 decimal places: {trimmed}");
-    }
-
-    let whole_value: u128 = if whole.is_empty() { 0 } else { whole.parse()? };
-    let mut frac_text = frac.to_string();
-    while frac_text.len() < 9 {
-        frac_text.push('0');
-    }
-    let frac_value: u128 = if frac_text.is_empty() {
-        0
-    } else {
-        frac_text.parse()?
-    };
-
-    let scaled = whole_value
-        .checked_mul(1_000_000_000u128)
-        .and_then(|value| value.checked_add(frac_value))
-        .ok_or_else(|| anyhow!("Amount overflows u64"))?;
-
-    u64::try_from(scaled).context("Amount overflows u64")
-}
-
-fn format_decimal_9(value: u64) -> String {
-    let whole = value / 1_000_000_000;
-    let frac = value % 1_000_000_000;
-    if frac == 0 {
-        return whole.to_string();
-    }
-
-    let frac_text = format!("{frac:09}").trim_end_matches('0').to_string();
-    format!("{whole}.{frac_text}")
-}
-```
+Parsed proof claims are unauthenticated display data. Only the proxy verifies the proof HMAC and binding to the exact transaction bytes.

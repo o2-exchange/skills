@@ -1,13 +1,13 @@
 ---
 name: o2-sdk-typescript
-description: "TypeScript reference for using the O2 SDK: installation, client setup, owner signer setup, trading account creation, session creation, market lookup, balances, order actions, nonce/session recovery, and account-action basics. Use when a user asks how to integrate O2 in TypeScript, create sessions, trade on O2, place or cancel orders, settle balances, inspect balances/orders, or prepare account actions used by bridge withdrawals."
+description: "TypeScript reference for using the O2 SDK: installation, client setup, owner signer setup, trading accounts, sessions, markets, balances, orders, withdrawals, and Fast Bridge proxy support. Use when a user asks how to integrate O2 in TypeScript, trade on O2, or use FastBridgeClient."
 ---
 
 # O2 SDK TypeScript
 
 Use this skill for O2 TypeScript setup and trading flows. Bridge-specific deposit and withdrawal skills should reference this skill for account, session, signer, market, and order setup.
 
-This skill is grounded in `@o2exchange/sdk@0.1.0` public exports. If a method is from a local extension/helper rather than the stock SDK, say that explicitly.
+This skill is grounded in `@o2exchange/sdk@0.4.0` public exports. If a method is from a local extension/helper rather than the stock SDK, say that explicitly.
 
 For deeper REST, signing, byte layout, endpoint, and error-code details, use `../../o2-reference/SKILL.md`.
 
@@ -306,9 +306,33 @@ const response = await client.withdraw(
 );
 ```
 
-`client.withdraw(...)` is an owner-signed O2 account withdrawal to a Fuel identity. It is not the EVM fast-bridge withdrawal helper.
+`client.withdraw(...)` is an owner-signed O2 account withdrawal to a Fuel identity. To continue from a funded Fuel wallet to EVM, use `FastBridgeClient`.
 
-If code uses `withdrawToChain(...)`, treat that as an application/helper extension layered on top of O2 account actions and fast-bridge contracts. The stock SDK method list does not include `withdrawToChain(...)` in `@o2exchange/sdk@0.1.0`.
+## Fast Bridge
+
+Fast Bridge is a separate proxy client, not a method on `O2Client` and not part of `NetworkConfig`.
+
+```ts
+import {
+  FAST_BRIDGE_MAINNET_URL,
+  FAST_BRIDGE_TESTNET_URL,
+  FastBridgeClient,
+  parseEvmUnsignedTransaction,
+  parseFuelUnsignedTransaction,
+  parsePreparationProof,
+} from "@o2exchange/sdk";
+
+const bridge = new FastBridgeClient({ baseUrl: FAST_BRIDGE_TESTNET_URL });
+console.log(await bridge.getInfo());
+console.log(await bridge.getAssets());
+```
+
+Use the bridge-specific skills for complete prepare, local inspection, signing, submit, and status flows:
+
+- [EVM-to-Fuel deposits](../../fast-bridge/deposits/SKILL.md)
+- [Fuel-to-EVM withdrawals](../../fast-bridge/withdrawals/SKILL.md)
+
+The submit tuple is always the exact `unsignedTransaction` and `preparationProof` returned by prepare plus a separate signature. Parsed proof claims are unauthenticated; only the proxy verifies the HMAC. Fast Bridge withdrawals spend a funded Fuel wallet, not a trading account/session.
 
 ## Market Data and Streams
 
@@ -337,4 +361,4 @@ for await (const update of await client.streamOrders(tradeAccountId)) {
 - Always settle before placing balance-sensitive orders.
 - Use market metadata for decimals and precision.
 - Do not use bridge amount rules for order quantities; O2 market decimals come from market metadata.
-- Do not call `withdrawToChain(...)` on a stock `O2Client` unless the project added that extension.
+- Use `FastBridgeClient`, not a custom `withdrawToChain(...)` method, for the supported proxy flow.
