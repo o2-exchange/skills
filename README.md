@@ -42,5 +42,6 @@ I need to bridge USDC from Ethereum to Fuel, then later move O2 profits through 
 ## Notes
 
 - The shared O2 reference docs live inside `o2-reference`, so the SDK skills do not repeat the same API and signing details.
-- Fast Bridge ABI files remain under `skills/fast-bridge/*/abis/` for advanced
-  proxy-bypass work; normal integrations should use the SDK proxy clients.
+- Fast Bridge ABI files remain under `skills/fast-bridge/*/abis/`. The Messenger,
+  Asset Registry, and Gas Oracle ABIs are for advanced proxy-bypass work; the
+  ERC-20 ABIs also support allowance and permit setup used with normal proxy flows.

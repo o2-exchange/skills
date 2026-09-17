@@ -1,6 +1,6 @@
 ---
 name: o2-fast-bridge-deposits
-description: Deposit assets from supported EVM chains to Fuel through the O2 Fast Bridge proxy. Covers SDK discovery, prepare/inspect/sign/submit/status, Fuel-unit amounts, recipient types, ERC-20 allowance and EIP-2612 permits, and advanced direct-Messenger bypasses. Use when implementing or explaining Fast Bridge deposits in TypeScript, Python, or Rust.
+description: Deposit or bridge ETH, USDC, or other supported assets from Base, Ethereum, or another supported EVM chain to a Fuel wallet or O2 trading account through the O2 Fast Bridge proxy. Covers TypeScript, Python, and Rust SDK discovery, prepare/inspect/sign/submit/status, Fuel-unit amounts, recipient types, ERC-20 allowance and EIP-2612 permits, and advanced direct-Messenger bypasses.
 ---
 
 # O2 Fast Bridge Deposits
@@ -33,15 +33,17 @@ Read the language flow that matches the implementation:
 ## Flow
 
 1. Create `FastBridgeClient` with an independently chosen mainnet or testnet URL.
-2. Read `getInfo`, `getAssets`, and `getDepositInfo` for discovery and availability.
+2. Read `getInfo`, `getAssets`, and `getDepositInfo` for discovery and availability. Check `routeEnabled`, `paused`, `whitelisted`, `remainingCapacity`, `amountEligible`/`ineligibilityReason`, `requiresAllowance`, `allowanceSpender`, and `permitSupported` as applicable.
 3. Call `prepareDeposit` with the intended route and full Fuel AssetId.
 4. Parse and inspect the returned `unsignedTransaction` locally.
 5. Optionally parse the proof claims to display expiry and signer information. Parsed claims are not authenticated.
-6. Sign the locally computed EVM signing digest.
+6. Recheck proof expiry, then sign the locally computed EVM signing digest.
 7. Submit the exact prepared transaction bytes, exact proof, and separate signature.
 8. Poll `getDepositStatus`; a 404 means not found, not fabricated pending.
 
 Never treat discovery responses as a trust anchor. Compare the parsed transaction with the original request and independently trusted chain IDs, Messenger addresses, token addresses, recipient, amount, value, and fee limits.
+
+Pin chain IDs, Messenger addresses, and token addresses in application-owned network/deployment configuration. Populate that configuration from a reviewed Fast Bridge deployment record or values independently verified before pinning. The [O2 Network Identifiers](https://docs.o2.app/network-identifiers.html) page is O2 API-backed live data that is useful for discovery and cross-checking, but it and the proxy's `getInfo`/`getAssets` responses must not replace trusted pinned configuration when approving a transaction.
 
 ## Prepare Request
 
@@ -65,6 +67,7 @@ Recipient rules:
 
 - Use `toType: "address"` for a Fuel wallet/address.
 - Use `toType: "contract"` for a Fuel contract ID.
+- To fund an O2 trading account directly, pass its `trade_account_id` as `to` with `toType: "contract"`. To fund the owner wallet, pass its Fuel address with `toType: "address"`.
 - Do not infer the type from a 32-byte value; both encodings have the same length.
 
 The selected route determines whether the transaction calls `depositETH`, `deposit`, or `depositWithPermit` on the source-chain Messenger.
@@ -133,7 +136,9 @@ The proxy remains stateless: it verifies the proof, expiry, transaction binding,
 `submitDeposit` reports acceptance, not final delivery. Poll `getDepositStatus(sourceChainId, evmTxHash)` with bounded backoff.
 
 - A 404 means the transaction is not currently found.
-- Source inclusion does not necessarily mean Fuel delivery is available or complete.
+- The proxy's source-side terminal states are `confirmed` and `reverted`; poll only while `source.status` is `pending` or the transaction is not yet found.
+- The proxy does not currently correlate Fuel-side delivery, so `fuel.status` remains `unavailable` and will not become a terminal delivery result through continued polling.
+- To confirm final delivery after source confirmation and the expected relay delay, query the intended Fuel wallet or contract balance directly using a trusted Fuel provider.
 - The clients do not automatically retry submissions or follow redirects.
 - A transport timeout during submit is ambiguous; reconcile chain/status data before resubmitting.
 
@@ -141,7 +146,7 @@ The proxy remains stateless: it verifies the proof, expiry, transaction binding,
 
 Direct Messenger integration is an advanced protocol-level path, not the normal SDK workflow. It requires the application to maintain chain deployments, token mappings and decimals, allowance/permit logic, gas policy, transaction construction, receipt handling, and relay tracking itself.
 
-The bundled [Messenger ABI](abis/Messenger.json), [ERC-20 metadata ABI](abis/IERC20Metadata.json), and [ERC-20 permit ABI](abis/IERC20Permit.json) exist for that explicit bypass use case. Do not use them to reimplement the default Fast Bridge flow when `FastBridgeClient` is available.
+The bundled [Messenger ABI](abis/Messenger.json) is for that explicit bypass use case; do not use it to reimplement the default Fast Bridge flow when `FastBridgeClient` is available. The [ERC-20 metadata ABI](abis/IERC20Metadata.json) and [ERC-20 permit ABI](abis/IERC20Permit.json) may also be used with the default proxy flow to read token metadata/nonces and construct the separate allowance or permit that occurs outside the proxy API.
 
 ## Sharp Rules
 

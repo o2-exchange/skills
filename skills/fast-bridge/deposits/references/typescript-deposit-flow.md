@@ -10,6 +10,7 @@ import {
   parsePreparationProof,
   type bridge,
 } from "@o2exchange/sdk";
+import { bytesToHex, fuelCompactSign, hexToBytes } from "@o2exchange/sdk/internals";
 
 const client = new FastBridgeClient({
   baseUrl: FAST_BRIDGE_TESTNET_URL,
@@ -18,68 +19,70 @@ const client = new FastBridgeClient({
 
 const request: bridge.DepositPrepareRequest = {
   sourceChainId: 11155111,
-  from: evmWallet.address,
+  from: evmAddress,
   to: fuelRecipient,
-  toType: "address", // use "contract" for a Fuel contract recipient
+  toType: "address", // "contract" for a Fuel contract or O2 trade_account_id
   assetId: fullFuelAssetId,
   amount: "1000000", // integer Fuel asset base units
 };
 
-const prepared = await client.prepareDeposit(request);
-const claims = parsePreparationProof(prepared.preparationProof);
-if (claims.expiresAt <= Date.now() / 1000) throw new Error("Prepare again");
+async function deposit(
+  request: bridge.DepositPrepareRequest,
+  privateKey: Uint8Array,
+  approve: (
+    request: bridge.DepositPrepareRequest,
+    tx: bridge.EvmDepositInspection,
+  ) => boolean | Promise<boolean>,
+) {
+  const prepared = await client.prepareDeposit(request);
+  const claims = parsePreparationProof(prepared.preparationProof);
+  const inspected = parseEvmUnsignedTransaction(prepared.unsignedTransaction);
+  console.dir(inspected, { depth: null });
 
-const inspected = parseEvmUnsignedTransaction(prepared.unsignedTransaction);
-console.dir(inspected, { depth: null });
+  // Compare chain ID, nonce, Messenger, method, recipient/type, token,
+  // amount/value, gas, and fee caps with request and trusted configuration.
+  if (!(await approve(request, inspected))) {
+    throw new Error("Prepared deposit does not match intent");
+  }
 
-// Application approval must compare chainId, nonce, Messenger, method,
-// recipient/type, token, amount/value, gas, and fee caps against request and
-// independently trusted configuration. Parsing itself is not approval.
-if (!approveDeposit(request, inspected)) {
-  throw new Error("Prepared deposit does not match intent");
+  // Recheck immediately before signing/submission in case approval took time.
+  if (claims.expiresAt <= Date.now() / 1000) throw new Error("Prepare again");
+
+  // SDK-native path: sign the locally computed raw digest and expand compact
+  // r || yParityAndS into the EVM r || s || v form expected by submit.
+  const compact = fuelCompactSign(privateKey, hexToBytes(inspected.signingDigest));
+  const signature = new Uint8Array(65);
+  signature.set(compact);
+  signature[64] = 27 + (compact[32] >>> 7);
+  signature[32] &= 0x7f;
+
+  return client.submitDeposit({
+    unsignedTransaction: prepared.unsignedTransaction,
+    preparationProof: prepared.preparationProof,
+    signature: bytesToHex(signature),
+  });
 }
-
-// ethers parses the same exact unsigned EIP-1559 envelope. signTransaction signs
-// its locally derived digest. Submit only the resulting r || s || v signature.
 ```
 
-Extract the signature from the signed transaction with ethers' `Transaction` class:
+Parsing is not approval. Trusted Messenger and token addresses should come from application-owned deployment configuration populated from a separately verified source, not from the proxy alone.
+
+If the application already uses ethers, `npm install ethers` provides an alternative inside the same `deposit` function in place of the SDK-native signing block:
 
 ```ts
 import { Transaction } from "ethers";
 
-const signed = await evmWallet.signTransaction(
-  Transaction.from(prepared.unsignedTransaction),
-);
+const transaction = Transaction.from(prepared.unsignedTransaction);
+// Inspect transaction and the SDK parser result before signing.
+const signed = await evmWallet.signTransaction(transaction);
 const signature = Transaction.from(signed).signature?.serialized;
 if (!signature) throw new Error("Missing EVM signature");
-
-const submitted = await client.submitDeposit({
-  unsignedTransaction: prepared.unsignedTransaction,
-  preparationProof: prepared.preparationProof,
-  signature,
-});
-
-console.log(submitted.evmTxHash);
 ```
 
-Do not submit `signed`; submit the exact unsigned transaction returned by prepare plus its separate signature. Do not compute approval from `signingPayload` supplied by the service; the SDK parser computes `inspected.signingDigest` from the unsigned bytes.
+Submit `prepared.unsignedTransaction`, not `signed`. Always derive the signing digest from the parsed unsigned bytes rather than trusting a digest supplied separately by a service.
 
-Poll status with bounded backoff:
+## Status
 
-```ts
-import { BridgeApiError } from "@o2exchange/sdk";
-
-try {
-  console.dir(
-    await client.getDepositStatus(submitted.sourceChainId, submitted.evmTxHash),
-    { depth: null },
-  );
-} catch (error) {
-  if (!(error instanceof BridgeApiError) || error.status !== 404) throw error;
-  console.log("Not found yet; this is not a fabricated pending state");
-}
-```
+Use `client.getDepositStatus(submitted.sourceChainId, submitted.evmTxHash)` with bounded backoff. A `BridgeApiError` with status 404 means not found. Stop proxy polling when `source.status` becomes `confirmed` or `reverted`; the proxy's `fuel.status` remains `unavailable` today. Confirm final Fuel delivery separately by querying the recipient wallet or contract balance after the expected relay delay. A submit timeout is ambiguous, so reconcile before resubmitting.
 
 ## Native ETH And ERC-20
 
@@ -87,6 +90,4 @@ The same request shape covers native ETH and ERC-20 routes. The proxy selects `d
 
 For ERC-20, establish an allowance for the trusted Messenger before prepare, or pass an EIP-2612 `permit` object. A permit is a separately signed token approval, not the transaction signature.
 
-## Proof Claims
-
-`parsePreparationProof` exposes `version`, `keyId`, `expiresAt`, and `signer`, but those claims are unauthenticated. Only the proxy verifies the HMAC binding to this operation and the exact transaction bytes.
+`parsePreparationProof` exposes `version`, `keyId`, `expiresAt`, and `signer` for display only. Only the proxy authenticates the proof and its exact transaction binding.

@@ -11,60 +11,59 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```rust
 use o2_sdk::bridge::{
     parse_evm_unsigned_transaction, parse_preparation_proof,
-    DepositPrepareRequest, FastBridgeClient, RecipientType, SubmitRequest,
-    FAST_BRIDGE_TESTNET_URL,
+    DepositPrepareRequest, DepositSubmitResponse, EvmDepositInspection,
+    FastBridgeClient, SubmitRequest,
 };
 use o2_sdk::crypto::{fuel_compact_sign, parse_hex_32, to_hex_string};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{error::Error, time::{SystemTime, UNIX_EPOCH}};
 
-let client = FastBridgeClient::new(FAST_BRIDGE_TESTNET_URL)?;
-let request = DepositPrepareRequest {
-    source_chain_id: 11155111,
-    from_address: evm_address,
-    to: fuel_recipient,
-    to_type: RecipientType::Address,
-    asset_id: full_fuel_asset_id,
-    amount: "1000000".into(), // integer Fuel asset base units
-    permit: None,
-};
+async fn deposit(
+    client: &FastBridgeClient,
+    request: &DepositPrepareRequest,
+    private_key: &[u8; 32],
+    approve: impl FnOnce(&DepositPrepareRequest, &EvmDepositInspection) -> bool,
+) -> Result<DepositSubmitResponse, Box<dyn Error>> {
+    let prepared = client.prepare_deposit(request).await?;
+    let claims = parse_preparation_proof(&prepared.preparation_proof)?;
+    let inspected = parse_evm_unsigned_transaction(&prepared.unsigned_transaction)?;
+    println!("{inspected:#?}");
 
-let prepared = client.prepare_deposit(&request).await?;
-let claims = parse_preparation_proof(&prepared.preparation_proof)?;
-if claims.expires_at <= SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() {
-    return Err("Prepare again: proof expired".into());
+    // Compare chain ID, nonce, Messenger, method, recipient/type, token,
+    // amount/value, gas, and fee caps with request and trusted configuration.
+    if !approve(request, &inspected) {
+        return Err("Prepared deposit does not match intent".into());
+    }
+
+    // Recheck immediately before signing/submission in case approval took time.
+    if claims.expires_at <= SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() {
+        return Err("Prepare again: proof expired".into());
+    }
+
+    let mut signature =
+        fuel_compact_sign(private_key, &parse_hex_32(&inspected.signing_digest)?)?.to_vec();
+    signature.push(27 + (signature[32] >> 7));
+    signature[32] &= 0x7f;
+
+    Ok(client
+        .submit_deposit(&SubmitRequest {
+            unsigned_transaction: prepared.unsigned_transaction,
+            preparation_proof: prepared.preparation_proof,
+            signature: to_hex_string(&signature),
+        })
+        .await?)
 }
-
-let inspected = parse_evm_unsigned_transaction(&prepared.unsigned_transaction)?;
-println!("{inspected:#?}");
-// Compare chain_id, nonce, messenger_address, method, recipient/type, token,
-// amount/value, gas and fee caps with request and independently trusted config.
-if !approve_deposit(&request, &inspected) {
-    return Err("Prepared deposit does not match intent".into());
-}
-
-// Sign the locally derived raw EIP-1559 digest, without personal-sign hashing.
-let mut signature =
-    fuel_compact_sign(&private_key, &parse_hex_32(&inspected.signing_digest)?)?.to_vec();
-signature.push(27 + (signature[32] >> 7));
-signature[32] &= 0x7f;
-
-let submitted = client
-    .submit_deposit(&SubmitRequest {
-        unsigned_transaction: prepared.unsigned_transaction,
-        preparation_proof: prepared.preparation_proof,
-        signature: to_hex_string(&signature),
-    })
-    .await?;
 ```
+
+For a wallet recipient use `RecipientType::Address`; for an O2 `trade_account_id` or other Fuel contract use `RecipientType::Contract`. The request amount is an integer string in Fuel asset base units.
 
 Submit the exact unsigned transaction and proof returned by prepare. The separate signature is 65-byte EVM `r || s || v`; do not submit a signed transaction envelope.
 
 ## Status
 
-Use `client.get_deposit_status(submitted.source_chain_id, &submitted.evm_tx_hash)` with bounded backoff. Match `BridgeError::Api { status: 404, .. }` as not found rather than treating it as a fabricated pending state. A submit timeout is ambiguous; reconcile status before resubmitting.
+Use `client.get_deposit_status(submitted.source_chain_id, &submitted.evm_tx_hash)` with bounded backoff. Match `BridgeError::Api { status: 404, .. }` as not found. Stop when `source.status` becomes `Confirmed` or `Reverted`; the proxy's Fuel-side status remains `Unavailable` today. Confirm final Fuel delivery separately by querying the recipient wallet or contract balance after the expected relay delay. A submit timeout is ambiguous, so reconcile before resubmitting.
 
 ## Native ETH, ERC-20, And Permit
 
 The proxy selects `depositETH`, `deposit`, or `depositWithPermit`. ERC-20 requires a Messenger allowance or an EIP-2612 `DepositPermit`. The permit is a separately signed token approval, not the EVM transaction signature.
 
-Parsed proof claims (`version`, `key_id`, `expires_at`, `signer`) are unauthenticated. Only the proxy verifies the HMAC and binding to the exact operation and transaction bytes.
+Parsed proof claims are display-only; only the proxy authenticates the proof and exact transaction binding.

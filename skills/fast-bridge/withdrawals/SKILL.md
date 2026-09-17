@@ -1,6 +1,6 @@
 ---
 name: o2-fast-bridge-withdrawals
-description: Withdraw assets from a funded Fuel wallet to supported EVM chains through the O2 Fast Bridge proxy. Covers SDK discovery, fee lookup, prepare/inspect/sign/submit/status, Fuel transaction parsing, gross/net amounts, trusted chain parameters, O2-account funding, and advanced direct-contract bypasses. Use when implementing or explaining Fast Bridge withdrawals in TypeScript, Python, or Rust.
+description: Withdraw or bridge supported assets from a funded Fuel wallet to a Base, Ethereum, or other supported EVM address through the O2 Fast Bridge proxy. Covers TypeScript, Python, and Rust SDK discovery, fees, prepare/inspect/sign/submit/status, Fuel transaction parsing, gross/net amounts, trusted chain parameters, O2-account funding, and advanced direct-contract bypasses.
 ---
 
 # O2 Fast Bridge Withdrawals
@@ -45,16 +45,30 @@ The owner/session/trading-account model matters for step 1 only. The Fast Bridge
 ## Flow
 
 1. Create `FastBridgeClient` with an independently chosen mainnet or testnet URL.
-2. Read `getInfo`, `getAssets`, `getWithdrawInfo`, and `getWithdrawFee` for discovery and availability.
+2. Read `getInfo`, `getAssets`, `getWithdrawInfo`, and `getWithdrawFee` for discovery and availability. Check `routeEnabled`, `paused`, `withdrawEnabled`, `amountEligible`/`ineligibilityReason`, fee freshness, and `rateLimit.remainingToday` as applicable.
 3. Obtain the trusted Fuel chain ID and consensus `maxInputs` independently of the proxy.
 4. Call `prepareWithdraw` for a funded Fuel wallet.
 5. Parse the exact transaction locally using the trusted chain ID and `maxInputs`.
 6. Compare every relevant parsed field with the original intent and trusted configuration.
-7. Sign the locally computed Fuel transaction ID.
+7. Recheck proof expiry, then sign the locally computed Fuel transaction ID.
 8. Submit the exact prepared bytes, exact proof, and separate compact signature.
 9. Poll `getWithdrawStatus`; a 404 means not found, not fabricated pending.
 
 Do not use prepare as a balance/status poll. Prepare may perform RPC work, coin selection, construction, and simulation.
+
+## Obtaining Trusted Fuel Parameters
+
+Get the Fuel chain ID and consensus `txParameters.maxInputs` from a Fuel RPC provider that the application already trusts, or pin reviewed values in the application's own network configuration. Do not source them from the proxy response or discovery endpoints.
+
+With fuels-ts 0.103, a trusted provider exposes both values:
+
+```ts
+const { consensusParameters } = await trustedFuelProvider.getChain();
+const trustedFuelChainId = BigInt(consensusParameters.chainId.toString());
+const trustedMaxInputs = consensusParameters.txParameters.maxInputs.toNumber();
+```
+
+Other languages can query the same trusted Fuel GraphQL `chain.consensusParameters` data or consume pinned application configuration. Cross-check `prepared.fuelChainId` against the trusted chain ID before parsing or signing. Pin the expected Asset Registry and Gas Oracle contract IDs in the same trusted deployment configuration; discovery responses may be compared against those values but are not substitutes for them.
 
 ## Prepare Request
 
@@ -119,6 +133,8 @@ Fuel `Change` and `Variable` output amounts, and a `Variable` output's recipient
 
 Sign the raw 32-byte `transactionId` with compact secp256k1. Do not personal-sign or otherwise hash it again.
 
+Applications may use a wallet, KMS, HSM, or other external signer instead of exposing a raw private key, provided it signs this exact raw digest and returns the compact Fuel signature expected by submit.
+
 ## Preparation Proof And Submit
 
 `preparationProof` is an opaque, short-lived Worker HMAC binding the operation and exact unsigned transaction bytes.
@@ -149,8 +165,9 @@ Do not reconstruct the transaction or spread other prepare-response fields into 
 Save the locally computed transaction ID before submit. Poll `getWithdrawStatus(transactionId)` with bounded backoff.
 
 - A 404 means not currently found.
-- Fuel inclusion/revert and destination-chain delivery are separate states.
-- An unavailable destination status is not proof of delivery.
+- The proxy's Fuel-side terminal states are `success` and `reverted`; poll only while `fuel.status` is `pending` or the transaction is not yet found.
+- The proxy does not currently correlate destination-chain delivery, so `destination.status` remains `unavailable` and will not become a terminal delivery result through continued polling.
+- To confirm final delivery after Fuel success and the expected relay delay, query the EVM recipient balance or the relevant trusted Outpost event directly.
 - The clients do not automatically retry submissions or follow redirects.
 - A submit timeout can mean the transaction was accepted; query status before resubmitting.
 
