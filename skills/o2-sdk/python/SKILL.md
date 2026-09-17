@@ -1,13 +1,13 @@
 ---
 name: o2-sdk-python
-description: "Python reference for using the O2 SDK: installation, client setup, Fuel and EVM EOA wallets, trading account setup, session creation, market lookup, order placement, batch actions, balances, orders, nonce recovery, stock withdrawals, and async lifecycle. Use when a user asks how to integrate O2 in Python, create sessions, trade on O2, place or cancel orders, settle balances, inspect balances/orders, or use the o2-sdk package."
+description: "Python reference for using the O2 SDK: installation, client setup, Fuel and EVM wallets, trading accounts, sessions, markets, orders, withdrawals, async lifecycle, and Fast Bridge proxy support. Use when a user asks how to integrate O2 in Python, trade on O2, or use FastBridgeClient."
 ---
 
 # O2 SDK Python
 
 Use this skill for Python integrations with `o2-sdk`. Keep this focused on normal SDK usage: setup, sessions, trading, account state, market data, and stock withdrawals.
 
-This skill is grounded in the public Python SDK (`pip install o2-sdk`). For deeper REST, signing, byte layout, endpoint, and error-code details, use `../../o2-reference/SKILL.md`.
+This skill is grounded in the public Python SDK `o2-sdk==0.5.0`. For deeper REST, signing, byte layout, endpoint, and error-code details, use `../../o2-reference/SKILL.md`.
 
 ## Install
 
@@ -206,7 +206,33 @@ Rules:
 - owner wallet signs the withdrawal.
 - session key cannot withdraw.
 
-Fast-bridge EVM withdrawals are not yet a native Python SDK helper. Use the fast-bridge withdrawal skill for that path.
+`client.withdraw(...)` only moves assets from an O2 trading account to a Fuel identity. To continue from a funded Fuel wallet to EVM, use `FastBridgeClient`.
+
+## Fast Bridge
+
+Fast Bridge is a separate proxy client, not a method on `O2Client` and not part of `NetworkConfig`.
+
+```python
+from o2_sdk import (
+    FAST_BRIDGE_MAINNET_URL,
+    FAST_BRIDGE_TESTNET_URL,
+    FastBridgeClient,
+    parse_evm_unsigned_transaction,
+    parse_fuel_unsigned_transaction,
+    parse_preparation_proof,
+)
+
+async with FastBridgeClient(FAST_BRIDGE_TESTNET_URL) as bridge:
+    print(await bridge.get_info())
+    print(await bridge.get_assets())
+```
+
+Use the bridge-specific skills for complete prepare, local inspection, signing, submit, and status flows:
+
+- [EVM-to-Fuel deposits](../../fast-bridge/deposits/SKILL.md)
+- [Fuel-to-EVM withdrawals](../../fast-bridge/withdrawals/SKILL.md)
+
+The submit tuple is always the exact `unsigned_transaction` and `preparation_proof` returned by prepare plus a separate signature. Parsed proof claims are unauthenticated; only the proxy verifies the HMAC. Fast Bridge withdrawals spend a funded Fuel wallet, not a trading account/session.
 
 ## Nonce Recovery And Cleanup
 

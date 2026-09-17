@@ -1,115 +1,93 @@
-# TypeScript Fast-Bridge Deposit Flow
+# TypeScript Fast Bridge Deposit
 
-## Install Dependencies
-
-Add the packages used by this reference flow:
-
-```bash
-npm install @o2exchange/sdk ethers
-```
-
-## Setup
+Use `FastBridgeClient` from `@o2exchange/sdk` 0.4 or newer. The proxy URL is independent of the O2 trading-network configuration.
 
 ```ts
-import { Network, O2Client } from "@o2exchange/sdk";
 import {
-  Contract as EvmContract,
-  JsonRpcProvider,
-  Wallet as EvmWallet,
-} from "ethers";
+  FAST_BRIDGE_TESTNET_URL,
+  FastBridgeClient,
+  parseEvmUnsignedTransaction,
+  parsePreparationProof,
+  type bridge,
+} from "@o2exchange/sdk";
+import { bytesToHex, fuelCompactSign, hexToBytes } from "@o2exchange/sdk/internals";
 
-import IERC20MetadataArtifact from "../abis/IERC20Metadata.json";
-import MessengerArtifact from "../abis/Messenger.json";
+const client = new FastBridgeClient({
+  baseUrl: FAST_BRIDGE_TESTNET_URL,
+  timeoutMs: 30_000,
+});
 
-const sourceChain = {
-  chainId: 8453,
-  rpcUrl: "https://mainnet.base.org",
-  messengerAddress: "0x2B1c1E133F832EFB1e168dE6102304B03C4ba653",
+const request: bridge.DepositPrepareRequest = {
+  sourceChainId: 11155111,
+  from: evmAddress,
+  to: fuelRecipient,
+  toType: "address", // "contract" for a Fuel contract or O2 trade_account_id
+  assetId: fullFuelAssetId,
+  amount: "1000000", // integer Fuel asset base units
 };
 
-const client = new O2Client({ network: Network.MAINNET });
-const ownerSigner = O2Client.loadEvmWallet(ownerPrivateKey);
-const account = await client.setupAccount(ownerSigner);
-const tradeAccountId = account.tradeAccountId;
+async function deposit(
+  request: bridge.DepositPrepareRequest,
+  privateKey: Uint8Array,
+  approve: (
+    request: bridge.DepositPrepareRequest,
+    tx: bridge.EvmDepositInspection,
+  ) => boolean | Promise<boolean>,
+) {
+  const prepared = await client.prepareDeposit(request);
+  const claims = parsePreparationProof(prepared.preparationProof);
+  const inspected = parseEvmUnsignedTransaction(prepared.unsignedTransaction);
+  console.dir(inspected, { depth: null });
 
-const provider = new JsonRpcProvider(sourceChain.rpcUrl, sourceChain.chainId);
-const wallet = new EvmWallet(ownerPrivateKey, provider);
-const messenger = new EvmContract(
-  sourceChain.messengerAddress,
-  MessengerArtifact.abi,
-  wallet,
-);
-```
+  // Compare chain ID, nonce, Messenger, method, recipient/type, token,
+  // amount/value, gas, and fee caps with request and trusted configuration.
+  if (!(await approve(request, inspected))) {
+    throw new Error("Prepared deposit does not match intent");
+  }
 
-Deposit native ETH:
+  // Recheck immediately before signing/submission in case approval took time.
+  if (claims.expiresAt <= Date.now() / 1000) throw new Error("Prepare again");
 
-```ts
-import { parseEther } from "ethers";
+  // SDK-native path: sign the locally computed raw digest and expand compact
+  // r || yParityAndS into the EVM r || s || v form expected by submit.
+  const compact = fuelCompactSign(privateKey, hexToBytes(inspected.signingDigest));
+  const signature = new Uint8Array(65);
+  signature.set(compact);
+  signature[64] = 27 + (compact[32] >>> 7);
+  signature[32] &= 0x7f;
 
-const value = parseEther(amountText);
-const tx = await messenger.depositETH(
-  tradeAccountId,
-  true,
-  { value },
-);
-
-const receipt = await tx.wait();
-```
-
-Deposit ERC-20 such as Base USDC:
-
-```ts
-import { MaxUint256, parseUnits } from "ethers";
-
-const tokenAddress = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
-const token = new EvmContract(
-  tokenAddress,
-  IERC20MetadataArtifact.abi,
-  wallet,
-);
-
-const decimals = Number(await token.decimals());
-const amount = parseUnits(amountText, decimals);
-const ownerAddress = await wallet.getAddress();
-const allowance = await token.allowance(
-  ownerAddress,
-  sourceChain.messengerAddress,
-);
-
-if (allowance < amount) {
-  await (await token.approve(sourceChain.messengerAddress, MaxUint256)).wait();
+  return client.submitDeposit({
+    unsignedTransaction: prepared.unsignedTransaction,
+    preparationProof: prepared.preparationProof,
+    signature: bytesToHex(signature),
+  });
 }
-
-const tx = await messenger.deposit(
-  tradeAccountId,
-  tokenAddress,
-  amount,
-  true,
-);
-
-const receipt = await tx.wait();
 ```
 
-Alternative: `depositWithPermit` if the token supports EIP-2612:
+Parsing is not approval. Trusted Messenger and token addresses should come from application-owned deployment configuration populated from a separately verified source, not from the proxy alone.
+
+If the application already uses ethers, `npm install ethers` provides an alternative inside the same `deposit` function in place of the SDK-native signing block:
 
 ```ts
-const tx = await messenger.depositWithPermit(
-  tradeAccountId,
-  tokenAddress,
-  amount,
-  deadline,
-  v,
-  r,
-  s,
-  true,
-);
+import { Transaction } from "ethers";
 
-const receipt = await tx.wait();
+const transaction = Transaction.from(prepared.unsignedTransaction);
+// Inspect transaction and the SDK parser result before signing.
+const signed = await evmWallet.signTransaction(transaction);
+const signature = Transaction.from(signed).signature?.serialized;
+if (!signature) throw new Error("Missing EVM signature");
 ```
 
-What matters:
+Submit `prepared.unsignedTransaction`, not `signed`. Always derive the signing digest from the parsed unsigned bytes rather than trusting a digest supplied separately by a service.
 
-- Use `tradeAccountId` as the default O2 recipient.
-- Set `recipientIsContract = true` for an O2 trading account.
-- Deposit amounts use source-token EVM decimals, not 9 decimals.
-- After the source transaction confirms, O2 crediting is asynchronous.
+## Status
+
+Use `client.getDepositStatus(submitted.sourceChainId, submitted.evmTxHash)` with bounded backoff. A `BridgeApiError` with status 404 means not found. Stop proxy polling when `source.status` becomes `confirmed` or `reverted`; the proxy's `fuel.status` remains `unavailable` today. Confirm final Fuel delivery separately by querying the recipient wallet or contract balance after the expected relay delay. A submit timeout is ambiguous, so reconcile before resubmitting.
+
+## Native ETH And ERC-20
+
+The same request shape covers native ETH and ERC-20 routes. The proxy selects `depositETH`, `deposit`, or `depositWithPermit` from its route configuration.
+
+For ERC-20, establish an allowance for the trusted Messenger before prepare, or pass an EIP-2612 `permit` object. A permit is a separately signed token approval, not the transaction signature.
+
+`parsePreparationProof` exposes `version`, `keyId`, `expiresAt`, and `signer` for display only. Only the proxy authenticates the proof and its exact transaction binding.

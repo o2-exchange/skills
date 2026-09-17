@@ -1,226 +1,161 @@
 ---
 name: o2-fast-bridge-deposits
-description: Explains O2 fast bridge deposits from an EVM source chain into O2/Fuel. Use for EVM-to-O2 deposits, Messenger.deposit, depositWithPermit, depositETH, recipientIsContract, O2 trade_account_id contract recipients, owner b256 wallet recipients, source-token decimals, whitelist/cap failures, deposit hashes, and relayer timing.
+description: Deposit or bridge ETH, USDC, or other supported assets from Base, Ethereum, or another supported EVM chain to a Fuel wallet or O2 trading account through the O2 Fast Bridge proxy. Covers TypeScript, Python, and Rust SDK discovery, prepare/inspect/sign/submit/status, Fuel-unit amounts, recipient types, ERC-20 allowance and EIP-2612 permits, and advanced direct-Messenger bypasses.
 ---
 
 # O2 Fast Bridge Deposits
 
-Use this skill when an agent must help a trader fund O2 from an EVM chain through the fast bridge.
+Use the O2 SDK's `FastBridgeClient` as the default integration. It talks to the stateless Cloudflare Worker proxy, returns an unsigned EVM transaction plus a short-lived `preparationProof`, and exposes offline parsers so callers can inspect the transaction before signing it.
 
-For O2 account setup and `trade_account_id` discovery, use:
-
-- `../../o2-sdk/typescript/SKILL.md`
-- `../../o2-sdk/python/SKILL.md`
-
-This skill is focused on the fast bridge deposit flow only.
-
-Use these bundled ABIs when writing code:
+Official proxy roots:
 
 ```text
-./abis/Messenger.json
-./abis/IERC20Metadata.json
-./abis/IERC20Permit.json
+Mainnet: https://bridge.o2.app
+Testnet: https://bridge.testnet.o2.app
 ```
 
-For reference snippets see:
+Do not append `/v1`; the client adds endpoint paths.
+
+Current SDK baselines:
 
 ```text
-./references/python-deposit-flow.md
-./references/typescript-deposit-flow.md
-./references/rust-deposit-flow.md
+TypeScript: @o2exchange/sdk 0.4+
+Python:     o2-sdk 0.5+
+Rust:       o2-sdk 0.4+
 ```
 
-## Install Dependencies
+Read the language flow that matches the implementation:
 
-TypeScript / JavaScript:
+- [TypeScript deposit flow](references/typescript-deposit-flow.md)
+- [Python deposit flow](references/python-deposit-flow.md)
+- [Rust deposit flow](references/rust-deposit-flow.md)
 
-```bash
-npm install @o2exchange/sdk ethers
-```
+## Flow
 
-Python:
+1. Create `FastBridgeClient` with an independently chosen mainnet or testnet URL.
+2. Read `getInfo`, `getAssets`, and `getDepositInfo` for discovery and availability. Check `routeEnabled`, `paused`, `whitelisted`, `remainingCapacity`, `amountEligible`/`ineligibilityReason`, `requiresAllowance`, `allowanceSpender`, and `permitSupported` as applicable.
+3. Call `prepareDeposit` with the intended route and full Fuel AssetId.
+4. Parse and inspect the returned `unsignedTransaction` locally.
+5. Optionally parse the proof claims to display expiry and signer information. Parsed claims are not authenticated.
+6. Recheck proof expiry, then sign the locally computed EVM signing digest.
+7. Submit the exact prepared transaction bytes, exact proof, and separate signature.
+8. Poll `getDepositStatus`; a 404 means not found, not fabricated pending.
 
-```bash
-pip install o2-sdk web3
-```
+Never treat discovery responses as a trust anchor. Compare the parsed transaction with the original request and independently trusted chain IDs, Messenger addresses, token addresses, recipient, amount, value, and fee limits.
 
-Rust:
+Pin chain IDs, Messenger addresses, and token addresses in application-owned network/deployment configuration. Populate that configuration from a reviewed Fast Bridge deployment record or values independently verified before pinning. The [O2 Network Identifiers](https://docs.o2.app/network-identifiers.html) page is O2 API-backed live data that is useful for discovery and cross-checking, but it and the proxy's `getInfo`/`getAssets` responses must not replace trusted pinned configuration when approving a transaction.
 
-```bash
-cargo add anyhow ethers o2-sdk tokio
-```
+## Prepare Request
 
-## User Action
-
-The user sends one source-chain EVM transaction to `Messenger`.
+The wire request is:
 
 ```text
-Messenger.deposit(bytes32 to, address token, uint256 value, bool recipientIsContract)
-Messenger.depositWithPermit(bytes32 to, address token, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s, bool recipientIsContract)
-Messenger.depositETH(bytes32 to, bool recipientIsContract)
-IERC20Metadata.decimals() -> uint8
+sourceChainId  supported EVM source chain ID
+from           20-byte EVM sender address
+to             32-byte Fuel address or contract ID
+toType         "address" or "contract"
+assetId        full 32-byte Fuel AssetId
+amount         integer string in Fuel asset base units
+permit         optional EIP-2612 permit object
 ```
 
-Mainnet source-chain defaults:
+`assetId` is the full Fuel AssetId, not an EVM token address and not the asset sub-ID. The asset sub-ID is the bridge-level identifier used to derive the Fuel AssetId for a specific Fuel contract; callers normally use the full AssetId returned by `getAssets`.
+
+All API amounts use the Fuel asset's decimals. The proxy converts the deposit amount into the source token's base units when it constructs the EVM transaction. Do not pass a float or pre-convert into EVM token units.
+
+Recipient rules:
+
+- Use `toType: "address"` for a Fuel wallet/address.
+- Use `toType: "contract"` for a Fuel contract ID.
+- To fund an O2 trading account directly, pass its `trade_account_id` as `to` with `toType: "contract"`. To fund the owner wallet, pass its Fuel address with `toType: "address"`.
+- Do not infer the type from a 32-byte value; both encodings have the same length.
+
+The selected route determines whether the transaction calls `depositETH`, `deposit`, or `depositWithPermit` on the source-chain Messenger.
+
+## Allowance And Permit
+
+ERC-20 deposits need either:
+
+- an existing allowance for the configured Messenger, followed by `deposit`; or
+- an EIP-2612 permit supplied to prepare, followed by `depositWithPermit`.
+
+The permit is a separate token-approval signature. It is not the EVM transaction signature. Build it from trusted token domain data, the current token nonce, the Messenger spender, value, and deadline. Permit creation and ordinary `approve` transactions happen outside the proxy API.
+
+Native ETH routes use `depositETH` and put the deposited value in the EVM transaction's `value` field.
+
+## Inspection And Signing
+
+Parse the prepared EIP-1559 transaction with the SDK before signing:
 
 ```text
-Base mainnet (chainId 8453)
-- Messenger: 0x2B1c1E133F832EFB1e168dE6102304B03C4ba653
-- USDC:      0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
-- FUEL:      0xFdedBefEc262fE0eeaA2bbdE1afA2ef09AaB6634
-
-Ethereum mainnet (chainId 1)
-- Messenger: 0x2B1c1E133F832EFB1e168dE6102304B03C4ba653
-- USDC:      0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48
-- FUEL:      0x675B68AA4d9c2d3BB3F0397048e62E6B7192079c
+TypeScript: parseEvmUnsignedTransaction(...)
+Python:     parse_evm_unsigned_transaction(...)
+Rust:       parse_evm_unsigned_transaction(...)
 ```
 
-## O2 Recipient Rule
+The inspection includes the locally derived `signingDigest`, chain ID, nonce, Messenger, method, recipient/type, token, amount, value, gas limit, fee caps, calldata, permit data, and `estimatedNetworkFee`.
 
-For O2 trading-account funding, put the O2 `trade_account_id` into `Messenger.deposit`.
+Important distinctions:
 
-The O2 trading account is a Fuel contract. That means the default O2 deposit uses:
+- The API request amount uses Fuel base units.
+- The parsed EVM amount/value uses source-token units or wei.
+- `estimatedNetworkFee` is `gasLimit * maxFeePerGas`, a maximum execution gas budget. It is not the actual fee and may exclude rollup L1 data fees.
+- Sign the raw `signingDigest`; do not use personal-sign or another helper that prefixes or hashes it again.
+
+With ethers, callers may instead parse the exact unsigned transaction, inspect it, use `wallet.signTransaction(...)`, and extract only the serialized signature from the signed transaction. Submit does not accept a signed transaction envelope.
+
+## Preparation Proof And Submit
+
+`preparationProof` is an opaque, short-lived proof produced by the Worker. It binds the operation and exact unsigned transaction bytes with an HMAC known only to the Workers.
+
+SDK proof parsers expose these unauthenticated claims for display and preflight checks:
 
 ```text
-to = trade_account_id
-recipientIsContract = true
+version
+keyId
+expiresAt
+signer
 ```
 
-An owner `b256` recipient is different. For an EVM owner, the owner `b256` often looks like the 20-byte EVM owner address left-padded to 32 bytes. Use that only when the user is intentionally depositing to the owner identity instead of the O2 trading-account contract.
+Parsing does not verify authenticity. Forged or expired proofs can still parse. There is deliberately no client-side verification helper because clients do not have the Worker secret; the proxy authenticates the proof during submit.
+
+Submit exactly:
 
 ```text
-Owner EVM address: 0xb5ab972BFe6B73382C138240441De34229244932
-Owner b256:        0x000000000000000000000000b5ab972BFe6B73382C138240441De34229244932
-Trade account ID:  0xf11b921863b55a03c7c770d4bea4f99a43cc34248fbce6320d4e3bc43d6a8e1f
+unsignedTransaction  unchanged value returned by prepare
+preparationProof      unchanged value returned by prepare
+signature             separate 65-byte EVM r || s || v signature
 ```
 
-Correct:
+Do not reconstruct, normalize, or replace the prepared transaction. The proof is bound to the original raw bytes.
 
-```ts
-import { Contract, parseUnits } from "ethers";
-import MessengerArtifact from "./abis/Messenger.json";
-import IERC20MetadataArtifact from "./abis/IERC20Metadata.json";
+The proxy remains stateless: it verifies the proof, expiry, transaction binding, route, sender, and signature without storing prepare-call state.
 
-const tradeAccountId =
-  "0xf11b921863b55a03c7c770d4bea4f99a43cc34248fbce6320d4e3bc43d6a8e1f";
-const messenger = new Contract(messengerAddress, MessengerArtifact.abi, signer);
-const token = new Contract(usdcAddress, IERC20MetadataArtifact.abi, signer);
-const amount = parseUnits("0.5", await token.decimals());
+## Status And Recovery
 
-await messenger.deposit(
-  tradeAccountId,
-  usdcAddress,
-  amount,
-  true, // O2 trading account is a Fuel contract
-);
-```
+`submitDeposit` reports acceptance, not final delivery. Poll `getDepositStatus(sourceChainId, evmTxHash)` with bounded backoff.
 
-Wrong:
+- A 404 means the transaction is not currently found.
+- The proxy's source-side terminal states are `confirmed` and `reverted`; poll only while `source.status` is `pending` or the transaction is not yet found.
+- The proxy does not currently correlate Fuel-side delivery, so `fuel.status` remains `unavailable` and will not become a terminal delivery result through continued polling.
+- To confirm final delivery after source confirmation and the expected relay delay, query the intended Fuel wallet or contract balance directly using a trusted Fuel provider.
+- The clients do not automatically retry submissions or follow redirects.
+- A transport timeout during submit is ambiguous; reconcile chain/status data before resubmitting.
 
-```ts
-await messenger.deposit(
-  ownerB256, // wrong for default O2 trading-account funding
-  usdcAddress,
-  amount,
-  false,
-);
-```
+## Advanced: Bypassing The Proxy
 
-## Amount Rule
+Direct Messenger integration is an advanced protocol-level path, not the normal SDK workflow. It requires the application to maintain chain deployments, token mappings and decimals, allowance/permit logic, gas policy, transaction construction, receipt handling, and relay tracking itself.
 
-Deposit inputs use the source asset's EVM decimals, not Fuel's 9-decimal wrapped-asset format.
+The bundled [Messenger ABI](abis/Messenger.json) is for that explicit bypass use case; do not use it to reimplement the default Fast Bridge flow when `FastBridgeClient` is available. The [ERC-20 metadata ABI](abis/IERC20Metadata.json) and [ERC-20 permit ABI](abis/IERC20Permit.json) may also be used with the default proxy flow to read token metadata/nonces and construct the separate allowance or permit that occurs outside the proxy API.
 
-- ERC-20: `parseUnits(userAmount, await token.decimals())`
-- ETH: `parseEther(userAmount)`
-- Raw bigint: already scaled to the source asset's native decimals
+## Sharp Rules
 
-Examples:
-
-```ts
-import { parseEther, parseUnits } from "ethers";
-
-const usdcAmount = parseUnits("0.5", 6); // 500000 raw USDC
-const fuelAmount = parseUnits("12.34", 18); // FUEL ERC-20 uses its own token decimals
-const ethAmount = parseEther("0.01");
-```
-
-`Messenger` normalizes the deposit to the bridge's 9-decimal format internally. If source decimals are greater than 9, the amount must scale down cleanly or the transaction reverts.
-
-On Fuel/O2, the credited bridge asset is the universal wrapped asset, such as `uwUSDC`, `uwETH`, or `uwFUEL`. Deposits still use the source-chain token address and source token decimals on EVM; the `uw` symbol matters later when deriving withdrawal `sub_id` / wrapped asset ID.
-
-## Source-Side Examples
-
-ERC-20 deposit:
-
-```ts
-import { Contract, MaxUint256, parseUnits } from "ethers";
-import MessengerArtifact from "./abis/Messenger.json";
-import IERC20MetadataArtifact from "./abis/IERC20Metadata.json";
-
-const messenger = new Contract(messengerAddress, MessengerArtifact.abi, signer);
-const token = new Contract(tokenAddress, IERC20MetadataArtifact.abi, signer);
-const depositTo = tradeAccountId;
-const amount = parseUnits(userAmount, await token.decimals());
-
-const allowance = await token.allowance(ownerAddress, messengerAddress);
-if (allowance === 0n) {
-  await token.approve(messengerAddress, MaxUint256);
-}
-
-const tx = await messenger.deposit(
-  depositTo,
-  tokenAddress,
-  amount,
-  true,
-);
-```
-
-Native ETH deposit:
-
-```ts
-import { Contract, parseEther } from "ethers";
-import MessengerArtifact from "./abis/Messenger.json";
-
-const messenger = new Contract(messengerAddress, MessengerArtifact.abi, signer);
-const depositTo = tradeAccountId;
-const value = parseEther(userAmount);
-
-const tx = await messenger.depositETH(
-  depositTo,
-  true,
-  { value },
-);
-```
-
-## `recipientIsContract`
-
-This flag describes the Fuel-side recipient type emitted in the deposit event.
-
-- O2 owner `b256` / padded EVM owner address: `false`
-- Normal Fuel address recipient: `false`
-- O2 `trade_account_id`: `true`
-- Other Fuel contract ID recipient: `true`
-
-Set `recipientIsContract = true` for the default O2 trading-account deposit because the O2 trading account is a Fuel contract. Set it to `false` only for a normal Fuel address or owner `b256` wallet recipient.
-
-## After the Transaction
-
-Once the EVM transaction emits `Deposit`, the source-side deposit succeeded. The user does not call any destination-side relayer or Fuel bridge method.
-
-Relayer processing is asynchronous. Docs may say around 10 seconds, but production timing can vary. Do not diagnose a successful source `Deposit` event as a user-side failure just because the O2 balance is not visible immediately.
-
-## Checks and Failure Modes
-
-Watch for:
-
-- token not whitelisted in `Messenger`
-- user cap exceeded
-- missing ERC-20 allowance
-- wrong source-chain token address
-- wrong source-token decimals
-- amount cannot normalize cleanly to 9 decimals
-- amount exceeds `uint64` after normalization
-- owner `b256` accidentally used as `to` when the user meant to fund an O2 trading account
-- wrong `recipientIsContract`
-
-When answering, show only what the user must submit on the EVM source chain, then explain what condition passed or failed.
+- Use the official proxy URL selected by the application; discovery is not a trust anchor.
+- Pass the full Fuel AssetId and a Fuel-base-unit integer string.
+- Keep `toType` explicit.
+- Inspect the locally parsed transaction before signing.
+- Preserve the exact unsigned bytes and proof through submit.
+- Treat parsed proof claims as unauthenticated.
+- Do not expose or request the Worker HMAC secret.
+- Do not confuse a permit signature with the transaction signature.
+- Do not treat submit acceptance as final cross-chain delivery.

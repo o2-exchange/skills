@@ -1,7 +1,7 @@
 Skills are organized into domain folders under `skills/`.
 
 - `o2-reference/` — shared O2 API/session/signing reference docs
-- `o2-sdk/` — TypeScript and Rust O2 SDK usage
+- `o2-sdk/` — TypeScript, Python, and Rust O2 SDK usage
 - `fast-bridge/` — O2 fast-bridge deposits and withdrawals
 
 Every skill must have:

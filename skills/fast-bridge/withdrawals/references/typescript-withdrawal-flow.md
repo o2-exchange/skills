@@ -1,300 +1,84 @@
-# TypeScript Fast-Bridge Withdrawal Flow
+# TypeScript Fast Bridge Withdrawal
 
-These snippets are the tested withdrawal path without CLI/env boilerplate.
-
-Setup the Fuel read contract and reusable imports:
+Use `FastBridgeClient` from `@o2exchange/sdk` 0.4 or newer. This flow spends a funded Fuel wallet, not an O2 trading account or session.
 
 ```ts
-import { createHash } from "node:crypto";
-import { parseUnits, zeroPadValue } from "ethers";
 import {
-  Contract as FuelContract,
-  Provider,
-  Wallet as FuelWallet,
-  getMintedAssetId,
-} from "fuels";
-import GasOracleAbi from "./abis/GasOracle-abi.json";
+  FAST_BRIDGE_TESTNET_URL,
+  FastBridgeClient,
+  parseFuelUnsignedTransaction,
+  parsePreparationProof,
+  type bridge,
+} from "@o2exchange/sdk";
+import { bytesToHex, fuelCompactSign, hexToBytes } from "@o2exchange/sdk/internals";
 
-const fuelProvider = new Provider(fuelRpcUrl);
-const viewWallet = FuelWallet.fromAddress(ownerSigner.b256Address, fuelProvider);
-const gasOracle = new FuelContract(gasOracleContractId, GasOracleAbi, viewWallet);
-```
-
-Resolve the bridge asset. User-facing `USDC` becomes Fuel/O2 bridge asset `uwUSDC`.
-
-```ts
-const bridgeAssetSymbol = normalizeBridgeAssetSymbol(asset); // "USDC" -> "uwUSDC"
-const assetSubId = sha256Hex(Buffer.from(bridgeAssetSymbol, "utf8"));
-const wrappedAssetId = getMintedAssetId(wrappedAssetsMinterContractId, assetSubId);
-```
-
-Quote the bridge fee from `GasOracle`, then compute the gross debit. The user receives roughly `desiredNetAmount`; O2 debits `desiredNetAmount + feeQuote`.
-
-```ts
-const feeQuote = await gasOracle.functions
-  .get_withdrawal_fee(destinationChainId, { bits: wrappedAssetId })
-  .get()
-  .then((r) => asBigInt(r.value));
-
-const desiredNetAmount = parseUnits(amountText, 9);
-const grossDebit = desiredNetAmount + feeQuote;
-```
-
-Fetch the O2 nonce and O2 signing chain id. Do not replace `o2ChainId` with a raw provider chain id.
-
-```ts
-const nonce = await fetchTradeAccountNonce(apiBase, tradeAccountId);
-const o2ChainId = await fetchO2ChainId(apiBase);
-```
-
-Encode the AssetRegistry call data manually. This is the 76-byte payload for `withdraw_via_fast_bridge_with_fee(sub_id, destination_chain, recipient, fee_quote)`.
-
-```ts
-const paddedRecipient = zeroPadValue(destinationEvmAddress, 32);
-
-const callData = concatBytes(
-  hexToBytes(assetSubId),
-  u32BE(destinationChainId),
-  hexToBytes(paddedRecipient),
-  u64BE(feeQuote),
-);
-```
-
-Build and owner-sign the O2 account-action payload bytes. `withdrawFunctionSelector` is Fuel `selectorBytes`, not the 8-byte method hash.
-
-```ts
-const withdrawFunctionSelector = actionSelector("withdraw_via_fast_bridge_with_fee");
-const signingBytes = concatBytes(
-  u64BE(nonce),
-  u64BE(o2ChainId),
-  actionSelector("call_contracts"),
-  buildActionsSigningBytes(nonce, [
-    {
-      contractId: hexToBytes(assetRegistryContractId),
-      functionSelector: withdrawFunctionSelector,
-      amount: grossDebit,
-      assetId: hexToBytes(wrappedAssetId),
-      gas: GAS_MAX,
-      callData,
-    },
-  ]).slice(8),
-);
-
-const signatureHex = normalizeSignatureHex(
-  await ownerSigner.personalSign(signingBytes),
-);
-```
-
-If generated TradeAccount bindings are available, simulate the same call before submitting the API action. The standalone flow above is still the source of truth for the signed payload bytes.
-
-```ts
-await tradeAccount.functions
-  .call_contracts(
-    { Secp256k1: { bits: Array.from(hexToBytes(signatureHex)) } },
-    [
-      {
-        contract_id: { bits: assetRegistryContractId },
-        function_selector: withdrawFunctionSelector,
-        call_params: {
-          coins: grossDebit.toString(),
-          asset_id: { bits: wrappedAssetId },
-          gas: GAS_MAX.toString(),
-        },
-        call_data: callData,
-      },
-    ],
-  )
-  .get();
-```
-
-Submit the O2 account action directly:
-
-```ts
-const payload = {
-  actions: [
-    {
-      WithdrawViaFastBridgeWithFee: {
-        amount: grossDebit.toString(),
-        fee_quote: feeQuote.toString(),
-        asset: {
-          sub_id: assetSubId,
-          universal: wrappedAssetId,
-        },
-        recipient: {
-          Evm: {
-            chain_id: destinationChainId.toString(),
-            recipient: {
-              address: destinationEvmAddress.toLowerCase(),
-            },
-          },
-        },
-      },
-    },
-  ],
-  signature: { Secp256k1: signatureHex },
-  nonce: nonce.toString(),
-  trade_account_id: tradeAccountId,
-  variable_outputs: 1,
-  contracts: [assetRegistryContractId],
-};
-
-const response = await fetch(`${apiBase}/v1/accounts/actions`, {
-  method: "POST",
-  headers: {
-    "content-type": "application/json",
-    "O2-Owner-Id": ownerSigner.b256Address,
-  },
-  body: JSON.stringify(payload),
+const client = new FastBridgeClient({
+  baseUrl: FAST_BRIDGE_TESTNET_URL,
+  timeoutMs: 30_000,
 });
 
-if (!response.ok) {
-  throw new Error(`O2 withdrawal action failed (${response.status}): ${await response.text()}`);
-}
-```
+// Obtain these from a Fuel provider the application already trusts, not from
+// the proxy. maxInputs is not encoded in the transaction.
+// trustedFuelProvider is the application's configured fuels Provider for its
+// independently selected Fuel RPC endpoint.
+const { consensusParameters } = await trustedFuelProvider.getChain();
+const trustedFuelChainId: bigint = BigInt(consensusParameters.chainId.toString());
+const trustedMaxInputs: number = consensusParameters.txParameters.maxInputs.toNumber();
 
-Helper: constants and bridge asset symbol normalization.
-
-```ts
-const GAS_MAX = (1n << 64n) - 1n;
-
-function normalizeBridgeAssetSymbol(value: string) {
-  const normalized = value.trim();
-  const upper = normalized.toUpperCase();
-  if (upper === "USDC" || upper === "UWUSDC") return "uwUSDC";
-  if (upper === "ETH" || upper === "UWETH") return "uwETH";
-  if (upper === "FUEL" || upper === "UWFUEL") return "uwFUEL";
-  if (/^uw[A-Za-z0-9]+$/.test(normalized)) return normalized;
-  throw new Error(`Unsupported bridge withdrawal asset: ${value}`);
-}
-```
-
-Helper: fetch nonce and O2 signing chain id.
-
-```ts
-async function fetchTradeAccountNonce(apiBase: string, tradeAccountId: string) {
-  const url = new URL(`${apiBase}/v1/accounts`);
-  url.searchParams.set("trade_account_id", tradeAccountId);
-  const response = await fetch(url);
-  const body = await response.text();
-  if (!response.ok) throw new Error(`Failed to fetch nonce: ${body}`);
-
-  const parsed = JSON.parse(body) as {
-    nonce?: string | number;
-    trade_account?: { nonce?: string | number } | null;
-  };
-  const nonce = parsed.nonce ?? parsed.trade_account?.nonce;
-  if (nonce === undefined) throw new Error(`Account response did not include nonce: ${body}`);
-  return BigInt(nonce);
-}
-
-async function fetchO2ChainId(apiBase: string) {
-  const response = await fetch(`${apiBase}/v1/markets`);
-  const body = await response.text();
-  if (!response.ok) throw new Error(`Failed to fetch markets: ${body}`);
-
-  const parsed = JSON.parse(body) as { chain_id?: string | number };
-  if (parsed.chain_id === undefined) {
-    throw new Error(`Markets response did not include chain_id: ${body}`);
-  }
-  return BigInt(parsed.chain_id);
-}
-```
-
-Helper: selector bytes and action signing bytes.
-
-```ts
-function actionSelector(name: string) {
-  const nameBytes = Buffer.from(name, "utf8");
-  return concatBytes(u64BE(BigInt(nameBytes.length)), Uint8Array.from(nameBytes));
-}
-
-function buildActionsSigningBytes(
-  nonce: bigint,
-  calls: Array<{
-    contractId: Uint8Array;
-    functionSelector: Uint8Array;
-    amount: bigint;
-    assetId: Uint8Array;
-    gas: bigint;
-    callData?: Uint8Array;
-  }>,
+async function withdraw(
+  request: bridge.WithdrawPrepareRequest,
+  privateKey: Uint8Array,
+  approve: (
+    request: bridge.WithdrawPrepareRequest,
+    tx: bridge.FuelWithdrawalInspection,
+  ) => boolean | Promise<boolean>,
 ) {
-  return concatBytes(
-    u64BE(nonce),
-    u64BE(BigInt(calls.length)),
-    ...calls.map((call) =>
-      concatBytes(
-        call.contractId,
-        u64BE(BigInt(call.functionSelector.length)),
-        call.functionSelector,
-        u64BE(call.amount),
-        call.assetId,
-        u64BE(call.gas),
-        encodeOptionalBytes(call.callData),
-      ),
-    ),
+  const prepared = await client.prepareWithdraw(request);
+  if (BigInt(prepared.fuelChainId) !== trustedFuelChainId) {
+    throw new Error("Unexpected Fuel chain");
+  }
+
+  const claims = parsePreparationProof(prepared.preparationProof);
+  const inspected = parseFuelUnsignedTransaction(
+    prepared.unsignedTransaction,
+    trustedFuelChainId,
+    trustedMaxInputs,
   );
-}
+  console.dir(inspected, { depth: null });
 
-function encodeOptionalBytes(value?: Uint8Array) {
-  return value
-    ? concatBytes(u64BE(1n), u64BE(BigInt(value.length)), value)
-    : u64BE(0n);
+  // Check contract, destination chain/recipient, asset, gross/fee/net amounts,
+  // fee caps, block expiry, every input owner/asset, and all outputs against
+  // request and trusted deployment configuration.
+  if (!(await approve(request, inspected))) {
+    throw new Error("Prepared withdrawal does not match intent");
+  }
+
+  // Recheck proof expiry immediately before signing/submission. Also ensure the
+  // parsed expirationBlockHeight remains usable for the intended submission.
+  if (claims.expiresAt <= Date.now() / 1000) throw new Error("Prepare again");
+
+  const signature = bytesToHex(
+    fuelCompactSign(privateKey, hexToBytes(inspected.transactionId)),
+  );
+  const submitted = await client.submitWithdraw({
+    unsignedTransaction: prepared.unsignedTransaction,
+    preparationProof: prepared.preparationProof,
+    signature,
+  });
+  return { transactionId: inspected.transactionId, submitted };
 }
 ```
 
-Helper: byte primitives.
+Sign the locally computed raw `transactionId` without personal-sign or extra hashing. Submit only the exact prepared bytes, exact proof, and compact signature; do not spread `fuelChainId` or reconstructed fields into submit. A wallet or external signer that supports raw-digest signing may replace direct private-key handling.
 
-```ts
-function concatBytes(...parts: Uint8Array[]) {
-  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
-  let offset = 0;
-  for (const part of parts) {
-    out.set(part, offset);
-    offset += part.length;
-  }
-  return out;
-}
+## Status
 
-function u32BE(value: number) {
-  const buffer = Buffer.alloc(4);
-  buffer.writeUInt32BE(value);
-  return Uint8Array.from(buffer);
-}
+Use `client.getWithdrawStatus(transactionId)` with bounded backoff. A `BridgeApiError` with status 404 means not found. Stop when `fuel.status` becomes `success` or `reverted`; the proxy's destination status remains `unavailable` today. Confirm EVM delivery separately by checking the recipient balance or relevant trusted Outpost event after the expected relay delay. A submit timeout is ambiguous, so query status before resubmitting.
 
-function u64BE(value: bigint) {
-  const buffer = Buffer.alloc(8);
-  buffer.writeBigUInt64BE(value);
-  return Uint8Array.from(buffer);
-}
+## Amounts And Funding
 
-function hexToBytes(value: string) {
-  const hex = value.startsWith("0x") ? value.slice(2) : value;
-  return Uint8Array.from(Buffer.from(hex, "hex"));
-}
+The request amount is gross. Inspect `grossAmount`, `bridgeFee`, and `netAmount`; the expected relationship is `netAmount = grossAmount - bridgeFee`. `networkFee.maxFee` is a separate Fuel base-asset cap.
 
-function sha256Hex(data: Uint8Array | Buffer) {
-  return `0x${createHash("sha256").update(data).digest("hex")}`;
-}
-```
+If funds are in an O2 trading account, first use the normal `O2Client.withdraw(...)` to move them to the owner Fuel wallet, then run this flow after the coin is available.
 
-Helper: normalize API/SDK return types.
-
-```ts
-function asBigInt(value: unknown) {
-  return BigInt(String(value));
-}
-
-function normalizeSignatureHex(signature: unknown) {
-  if (typeof signature === "string") {
-    return signature.startsWith("0x") ? signature : `0x${signature}`;
-  }
-  if (signature instanceof Uint8Array) {
-    return `0x${Buffer.from(signature).toString("hex")}`;
-  }
-  if (Array.isArray(signature)) {
-    return `0x${Buffer.from(signature).toString("hex")}`;
-  }
-  throw new Error("Unsupported signature format returned by ownerSigner.personalSign");
-}
-```
+Parsed proof claims are display-only; only the proxy authenticates the proof and exact transaction binding.

@@ -13,11 +13,11 @@ npx skills add o2-exchange/skills
 | Skill | Use This For |
 | --- | --- |
 | [o2-reference](./skills/o2-reference/SKILL.md) | Shared O2 API, session, and signing reference material used by the SDK and bridge skills. |
-| [o2-sdk-typescript](./skills/o2-sdk/typescript/SKILL.md) | Building with the O2 SDK in TypeScript: account setup, owner signers, sessions, markets, balances, orders, nonce recovery, and account actions. |
-| [o2-sdk-python](./skills/o2-sdk/python/SKILL.md) | Building with the O2 SDK in Python: owner wallets, trading accounts, sessions, balances, orders, withdrawals, and batch actions. |
-| [o2-sdk-rust](./skills/o2-sdk/rust/SKILL.md) | Building with the O2 SDK in Rust: owner wallets, trading accounts, sessions, balances, orders, withdrawals, and streams. |
-| [o2-fast-bridge-deposits](./skills/fast-bridge/deposits/SKILL.md) | Moving funds from an EVM chain into an O2 trading account, with TypeScript, Python, and Rust reference flows for deposits. |
-| [o2-fast-bridge-withdrawals](./skills/fast-bridge/withdrawals/SKILL.md) | Moving funds from an O2 trading account back to an EVM chain, with TypeScript, Python, and Rust reference flows for fee quotes and withdrawals. |
+| [o2-sdk-typescript](./skills/o2-sdk/typescript/SKILL.md) | Building with the TypeScript SDK: accounts, sessions, trading, standard withdrawals, and Fast Bridge proxy access. |
+| [o2-sdk-python](./skills/o2-sdk/python/SKILL.md) | Building with the Python SDK: accounts, sessions, trading, standard withdrawals, and Fast Bridge proxy access. |
+| [o2-sdk-rust](./skills/o2-sdk/rust/SKILL.md) | Building with the Rust SDK: accounts, sessions, trading, standard withdrawals, streams, and Fast Bridge proxy access. |
+| [o2-fast-bridge-deposits](./skills/fast-bridge/deposits/SKILL.md) | SDK-first EVM-to-Fuel deposits through the Fast Bridge proxy, with TypeScript, Python, and Rust flows. |
+| [o2-fast-bridge-withdrawals](./skills/fast-bridge/withdrawals/SKILL.md) | SDK-first withdrawals from a funded Fuel wallet to EVM through the Fast Bridge proxy, including inspection, fees, signing, and status. |
 
 ## Usage Examples
 
@@ -30,17 +30,18 @@ I am building a TypeScript market-making bot on O2. Use o2-sdk-typescript to set
 #### Base Native ETH Funding Flow
 
 ```text
-I run a bot from Base and want to fund its O2 trading account with native ETH before rotating into trading collateral on O2. Use o2-fast-bridge-deposits and show the depositETH flow for my O2 trading account (trade_account_id).
+I run a bot from Base and want to bridge native ETH to a Fuel wallet. Use o2-fast-bridge-deposits and show the FastBridgeClient prepare, inspect, sign, submit, and status flow.
 ```
 
 #### Cross-chain multi-asset Flow
 
 ```text
-I manage multiple trading bots and need to bridge USDC from Ethereum mainnet into one trading account, then withdraw profits later to a Base EVM address. Use o2-fast-bridge-deposits for the Ethereum USDC funding flow and o2-fast-bridge-withdrawals for the owner-signed USDC withdrawal flow.
+I need to bridge USDC from Ethereum to Fuel, then later move O2 profits through my Fuel wallet to a Base address. Use both Fast Bridge skills and explain the O2-account-to-wallet step before the Fuel-to-EVM withdrawal.
 ```
 
 ## Notes
 
 - The shared O2 reference docs live inside `o2-reference`, so the SDK skills do not repeat the same API and signing details.
-- Fast-bridge ABI files are bundled with the bridge skills that use them:
-  `skills/fast-bridge/deposits/abis/` and `skills/fast-bridge/withdrawals/abis/`.
+- Fast Bridge ABI files remain under `skills/fast-bridge/*/abis/`. The Messenger,
+  Asset Registry, and Gas Oracle ABIs are for advanced proxy-bypass work; the
+  ERC-20 ABIs also support allowance and permit setup used with normal proxy flows.

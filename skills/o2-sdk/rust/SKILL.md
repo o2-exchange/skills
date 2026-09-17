@@ -1,13 +1,13 @@
 ---
 name: o2-sdk-rust
-description: "Rust reference for using the O2 SDK: installation, client setup, Fuel and EVM EOA wallets, trading account setup, session creation, market lookup, order placement, batch actions, balances, orders, nonce recovery, stock withdrawals, and WebSocket streams. Use when a user asks how to integrate O2 in Rust, create sessions, trade on O2, place or cancel orders, settle balances, inspect balances/orders, stream updates, or use the o2-sdk crate."
+description: "Rust reference for using the O2 SDK: installation, client setup, Fuel and EVM wallets, trading accounts, sessions, markets, orders, withdrawals, streams, and Fast Bridge proxy support. Use when a user asks how to integrate O2 in Rust, trade on O2, or use FastBridgeClient."
 ---
 
 # O2 SDK Rust
 
 Use this skill for Rust integrations with the `o2-sdk` crate. Keep this focused on normal O2 SDK usage: setup, sessions, trading, account state, market data, streams, and stock withdrawals.
 
-This skill is grounded in the Rust `o2-sdk` public API around `o2-sdk = "0.2.0"` and Rust 1.75+.
+This skill is grounded in the Rust `o2-sdk` public API around `o2-sdk = "0.4.0"` and Rust 1.75+.
 
 For deeper REST, signing, byte layout, endpoint, and error-code details, use `../../o2-reference/SKILL.md`.
 
@@ -15,7 +15,7 @@ For deeper REST, signing, byte layout, endpoint, and error-code details, use `..
 
 ```toml
 [dependencies]
-o2-sdk = "0.2.0"
+o2-sdk = "0.4.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -270,6 +270,33 @@ Rules:
 - `asset_id` is a hex asset ID.
 - `amount` is a raw integer string for the asset amount expected by this method.
 - Optional `to` must be a 32-byte hex Fuel identity address.
+
+`client.withdraw(...)` only moves assets from an O2 trading account to a Fuel identity. To continue from a funded Fuel wallet to EVM, use `FastBridgeClient`.
+
+## Fast Bridge
+
+Fast Bridge is a separate proxy client, not a method on `O2Client` and not part of `NetworkConfig`.
+
+```rust
+use o2_sdk::{
+    FastBridgeClient, FAST_BRIDGE_MAINNET_URL, FAST_BRIDGE_TESTNET_URL,
+};
+use o2_sdk::bridge::{
+    parse_evm_unsigned_transaction, parse_fuel_unsigned_transaction,
+    parse_preparation_proof,
+};
+
+let bridge = FastBridgeClient::new(FAST_BRIDGE_TESTNET_URL)?;
+println!("{:#?}", bridge.get_info().await?);
+println!("{:#?}", bridge.get_assets(None).await?);
+```
+
+Use the bridge-specific skills for complete prepare, local inspection, signing, submit, and status flows:
+
+- [EVM-to-Fuel deposits](../../fast-bridge/deposits/SKILL.md)
+- [Fuel-to-EVM withdrawals](../../fast-bridge/withdrawals/SKILL.md)
+
+The submit tuple is always the exact `unsigned_transaction` and `preparation_proof` returned by prepare plus a separate signature. Parsed proof claims are unauthenticated; only the proxy verifies the HMAC. Fast Bridge withdrawals spend a funded Fuel wallet, not a trading account/session.
 
 ## Market Data
 
